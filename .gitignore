@@ -1,0 +1,21 @@
+# 构建产物（走 GitHub Releases，不进仓库）
+release/
+*.apk
+*.exe
+!pc/adb/adb.exe
+!pc/adb/*.dll
+pc/dist/
+pc/build/
+pc/*.spec
+pc/__pycache__/
+
+# Android
+.gradle/
+**/build/
+android/local.properties
+.idea/
+*.iml
+
+# 系统/编辑器
+Thumbs.db
+.DS_Store
