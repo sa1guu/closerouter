@@ -36,7 +36,7 @@ class App : Application() {
                 com.closerouter.app.data.ProviderProfile(
                     name = "示例（请编辑）",
                     baseUrl = "https://api.openai.com/v1",
-                    apiKey = "",
+                    apiKey = "sk-请替换成真实密钥",
                     model = "gpt-4o-mini",
                     apiType = "openai"
                 )
