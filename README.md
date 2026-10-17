@@ -7,7 +7,7 @@
 *Turn your phone into an LLM API router. Preset providers on the phone, plug in USB (or share LAN), and any OpenAI/Anthropic-compatible tool on the PC gets working endpoints — all traffic goes through the phone's network.*
 
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com)
-[![Version](https://img.shields.io/badge/version-1.0.18-E8741C)](../../releases)
+[![Version](https://img.shields.io/badge/version-1.0.20-E8741C)](../../releases)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## 特性
@@ -17,7 +17,7 @@
 - **多提供方预设**：名称 / Base URL / Key / 模型 / 协议类型，主界面下拉秒切
 - **按端点测速**：一键测速会按所选提供方的协议分别请求 Chat、Responses 或 Messages 端点，显示 TTFT、tok/s 与总耗时
 - **实时统计**：tok/s 吞吐、首字延迟（TTFT）、今日 token、今日请求数
-- **可交互机柜**：七个功能单元与下方功能页双向联动，可左右滑动切换；点击底座抬升机柜查看 PCB，按电源启动后风扇加速、内部组件点亮，断电时风扇缓停、AI 小屏收拢并关闭
+- **可交互机柜**：七个功能单元与下方功能页双向联动，可左右滑动切换；点击底座抬升机柜查看 PCB，按电源启动后风扇加速、内部组件点亮，断电或抬升机柜时 AI 屏收拢熄灭；相邻点亮单元用直线直连，跨暗点或单元弹出时改用弧线，流光点密度随之调整
 - **防后台杀死**：前台服务 + 常驻通知 + 唤醒锁 + 一键跳电池优化白名单
 - **零命令电脑端**：APK 内置 `CloseRouter_WebUI.exe`，导出到电脑双击打开，选择 USB 或局域网模式即可连接
 - 黑白极简 UI，无对话功能，只做转发
@@ -62,7 +62,7 @@
 
 ```bash
 # Android（JDK 17 + Android SDK，AGP 8.7 / Kotlin 2.2）
-cd android && ./gradlew assembleDebug testDebugUnitTest   # 53 项 JVM 单测
+cd android && ./gradlew assembleDebug testDebugUnitTest   # 63 项 JVM 单测
 
 # 电脑端 WebUI（Python 3.12 + PyInstaller，内嵌 adb）
 # 构建脚本位于 closerouter_webui 项目，输出 CloseRouter_WebUI.exe

@@ -40,6 +40,27 @@ class RackLayoutTest {
     }
 
     @Test
+    fun adjacentLiveUnitsAreJoinedWithAStraightCable() {
+        assertEquals(CableStyle.STRAIGHT, RackLayout.cableStyle(0, 1, false, false))
+        assertEquals(CableStyle.STRAIGHT, RackLayout.cableStyle(5, 6, false, false))
+    }
+
+    @Test
+    fun straightCableUsesFewerFlowDotsThanTheCurvedCable() {
+        assertEquals(2, RackLayout.flowDotCount(CableStyle.STRAIGHT))
+        assertEquals(3, RackLayout.flowDotCount(CableStyle.CURVED))
+    }
+
+    @Test
+    fun darkGapOrAnEjectedUnitKeepsTheCableCurved() {
+        // A dark unit between two live nodes leaves a visible gap.
+        assertEquals(CableStyle.CURVED, RackLayout.cableStyle(0, 2, false, false))
+        // Either endpoint moving out of the rack needs slack.
+        assertEquals(CableStyle.CURVED, RackLayout.cableStyle(0, 1, true, false))
+        assertEquals(CableStyle.CURVED, RackLayout.cableStyle(0, 1, false, true))
+    }
+
+    @Test
     fun topIdentifierClearsTheRearFan() {
         // Fan 3 center (RW-1.15, RD/2), radius .81; indicator row must sit behind its rear edge.
         val fanRearEdge = 2.8f / 2f - 0.81f

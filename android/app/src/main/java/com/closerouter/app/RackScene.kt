@@ -956,7 +956,8 @@ fun RackScene(
                 if (last != 0L) {
                     val dt = ((n - last) / 1e9f).coerceAtMost(0.05f)
                     val online = runningNow
-                    val fansMayRun = online && liftA.value < 0.5f
+                    val aiShouldRun = online && liftA.value < 0.5f
+                    val fansMayRun = aiShouldRun
                     if (online) t += dt
                     fanSpeed = RackPowerVisuals.advanceFanSpeed(fanSpeed, fansMayRun, dt)
                     for (k in 0 until FAN_N) {
@@ -966,7 +967,8 @@ fun RackScene(
                             fanKick[k] *= exp(-2.5f * dt)
                         }
                     }
-                    if (online) {
+                    if (online) flow += dt * (0.22f + 0.55f * glowOn.value)
+                    if (aiShouldRun) {
                         if (!wasPowered) {
                             bootT = 0f
                             aiRunT = 0f
@@ -974,13 +976,12 @@ fun RackScene(
                         bootT += dt
                         aiRunT += dt
                         aiOffT = 0f
-                        flow += dt * (0.22f + 0.55f * glowOn.value)
                     } else {
                         bootT = 0f
                         aiOffT = (aiOffT + dt).coerceAtMost(RackPowerVisuals.SHUTDOWN_SECONDS)
                         if (aiOffT >= RackPowerVisuals.SHUTDOWN_SECONDS) aiRunT = 0f
                     }
-                    wasPowered = online
+                    wasPowered = aiShouldRun
                 }
                 last = n
             }
@@ -1482,13 +1483,20 @@ fun RackScene(
             val cable = Path().apply {
                 moveTo(from.x, from.y); cubicTo(c1.x, c1.y, c2.x, c2.y, to.x, to.y)
             }
+            val style = RackLayout.cableStyle(i, j, popD[i] > 0.004f, popD[j] > 0.004f)
+            val run = if (style == CableStyle.STRAIGHT) {
+                Path().apply { moveTo(from.x, from.y); lineTo(to.x, to.y) }
+            } else {
+                cable
+            }
             val on = min(litA[i].value * glow, litA[j].value * glow)
             if (on <= 0.001f) continue
-            drawPath(cable, Pal.line.copy(alpha = on), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
-            drawPath(cable, Pal.orange.copy(alpha = on), style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
-            pm.setPath(cable, false)
-            for (k in 0 until 3) {
-                val u = (flow * (1f + i * 0.07f) + k / 3f) % 1f
+            drawPath(run, Pal.line.copy(alpha = on), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+            drawPath(run, Pal.orange.copy(alpha = on), style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
+            pm.setPath(run, false)
+            val dotCount = RackLayout.flowDotCount(style)
+            for (k in 0 until dotCount) {
+                val u = (flow * (1f + i * 0.07f) + k / dotCount.toFloat()) % 1f
                 val position = pm.getPosition(u * pm.length)
                 drawCircle(Color.White.copy(alpha = 0.9f * on), 2.2.dp.toPx(), position)
                 drawCircle(Pal.orangeDeep.copy(alpha = 0.9f * on), 2.2.dp.toPx(), position, style = Stroke(cableLineWidth))

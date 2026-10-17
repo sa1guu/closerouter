@@ -1,5 +1,7 @@
 package com.closerouter.app
 
+internal enum class CableStyle { STRAIGHT, CURVED }
+
 internal object RackLayout {
     const val CABLE_START = 0.20f
     const val TOP_LABEL_X = 4.02f
@@ -12,4 +14,10 @@ internal object RackLayout {
 
     fun connections(lit: List<Boolean>): List<Pair<Int, Int>> =
         lit.indices.filter { lit[it] }.zipWithNext()
+
+    fun cableStyle(from: Int, to: Int, fromPopped: Boolean, toPopped: Boolean): CableStyle =
+        if (to - from == 1 && !fromPopped && !toPopped) CableStyle.STRAIGHT else CableStyle.CURVED
+
+    fun flowDotCount(style: CableStyle): Int =
+        if (style == CableStyle.STRAIGHT) 2 else 3
 }
