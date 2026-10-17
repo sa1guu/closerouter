@@ -551,7 +551,89 @@ private fun DrawScope.bayTopParts(
     }
 }
 
-private fun DrawScope.drawMac(iso: Iso, m: Float, on: Boolean, bt: Float, t: Float, lw: Float) {
+/** Shared AI panel renderer used by both the fixed side screen and the ejectable module. */
+private fun DrawScope.drawAiPanel(
+    iso: Iso, x: Float, y0: Float, y1: Float, z0: Float, z1: Float,
+    on: Boolean, runT: Float, offT: Float, t: Float, lw: Float, s: Float
+) {
+    fun panel(yA: Float, yB: Float, zA: Float, zB: Float, inset: Float = 0f): Path = roundedQuadPath(
+        listOf(iso.p(x, yB, zB), iso.p(x, yA, zB), iso.p(x, yA, zA), iso.p(x, yB, zA)), inset
+    )
+    val stopping = !on && runT > 0f && offT < RackPowerVisuals.SHUTDOWN_SECONDS
+    val shutdown = if (stopping) RackPowerVisuals.shutdownProgress(offT) else 0f
+    val centerZ = (z0 + z1) * 0.5f
+    val halfHeight = (z1 - z0) * 0.5f * if (stopping) RackPowerVisuals.shutdownAperture(offT) else 1f
+    val window = panel(y0, y1, centerZ - halfHeight, centerZ + halfHeight)
+
+    drawPath(panel(y0 - 0.11f, y1 + 0.11f, z0 - 0.08f, z1 + 0.08f, 0.03f), Color(0xFFD6D8DC))
+    drawPath(panel(y0 - 0.07f, y1 + 0.07f, z0 - 0.05f, z1 + 0.05f, 0.02f), Color.White)
+    drawPath(panel(y0, y1, z0, z1), Color(0xFF15171B))
+    if (on || stopping) {
+        drawPath(window, if (stopping) Color(0xFFFFE8D0) else Color(0xFFFFE8D0))
+    }
+    clipPath(window) {
+        if (!on && !stopping) return@clipPath
+        if (runT < 2.9f) {
+            val cell = min((y1 - y0 - 0.25f) / glyphCols("AI"), (z1 - z0 - 0.35f) / 7f)
+            val reveal = RackPowerVisuals.bootProgress(runT)
+            var pixelIndex = 0
+            val totalPixels = "AI".sumOf { ch -> GLYPHS.getValue(ch).sumOf { row -> row.count { it == '1' } } }
+            var y = y1 - 0.16f
+            for (ch in "AI") {
+                val glyph = GLYPHS.getValue(ch)
+                for (row in glyph.indices) for (column in glyph[row].indices) {
+                    if (glyph[row][column] != '1') continue
+                    if (pixelIndex++ >= (totalPixels * reveal).toInt()) continue
+                    val y0p = y - column * cell
+                    val z0p = z1 - 0.2f - row * cell
+                    drawPath(panel(y0p - cell * 0.88f, y0p, z0p - cell * 0.88f, z0p), Pal.orangeDeep)
+                }
+                y -= (glyph[0].length + 1) * cell
+            }
+        } else {
+            val columns = 18
+            val cell = (y1 - y0 - 0.2f) / columns
+            val rowHeight = (z1 - z0 - 0.18f) / 12f
+            fun pixel(column: Int, row: Float, color: Color) {
+                val py = y1 - 0.1f - column * cell
+                val pz = z1 - 0.1f - row * rowHeight
+                drawPath(panel(py - cell * 0.75f, py, pz - rowHeight * 0.7f, pz), color)
+            }
+            val stepTime = 1.55f
+            val elapsed = runT - 2.9f
+            val message = (elapsed / stepTime).toInt()
+            val progress = (elapsed % stepTime) / stepTime
+            val scroll = ((progress - 0.85f) / 0.15f).coerceIn(0f, 1f)
+            for (slot in 0..3) {
+                val id = message - 3 + slot
+                if (id < 0) continue
+                val assistant = id % 2 == 1
+                val length = 9 + (id * 3 % 7)
+                val shown = if (id == message) (length * (progress / 0.72f).coerceIn(0f, 1f)).toInt() else length
+                for (column in 0 until shown) {
+                    if (column % 5 != 4) {
+                        pixel(if (assistant) columns - 1 - column else column, 1f + slot * 2.2f - scroll * 2.2f,
+                            if (assistant) Pal.orangeDeep else Color(0xFFBC9A7E))
+                    }
+                }
+            }
+            for (dot in 0..2) {
+                pixel(7 + dot * 2, 10.5f, Pal.orangeDeep.copy(alpha = if ((elapsed * 5f).toInt() % 3 == dot) 1f else 0.25f))
+            }
+        }
+    }
+    if (stopping) {
+        drawLine(Pal.orange.copy(alpha = (1f - shutdown) * 0.9f),
+            iso.p(x, y0 + 0.08f, centerZ), iso.p(x, y1 - 0.08f, centerZ),
+            (0.010f + 0.020f * (1f - shutdown)) * s, cap = StrokeCap.Round)
+    }
+    // Small full-width glare and service LED, kept clear of all content.
+    drawLine(Color.White.copy(alpha = 0.56f), iso.p(x, y0 + 0.1f, z0 + 0.09f),
+        iso.p(x, y1 - 0.1f, z0 + 0.09f), lw * 1.1f)
+    drawCircle(if (on) Pal.orange else Color(0xFF8D8F94), 1.6.dp.toPx(), iso.p(x, y1 - 0.16f, z0 + 0.09f))
+}
+
+private fun DrawScope.drawMac(iso: Iso, m: Float, on: Boolean, runT: Float, offT: Float, t: Float, lw: Float) {
     val d = m.coerceIn(0f, 1.15f) * MAC_D
     val xf = RW + d
     val slot = quad(iso.p(RW, MY0, MZ1), iso.p(RW, MY1, MZ1), iso.p(RW, MY1, MZ0), iso.p(RW, MY0, MZ0))
@@ -565,72 +647,25 @@ private fun DrawScope.drawMac(iso: Iso, m: Float, on: Boolean, bt: Float, t: Flo
                 val x = RW + 0.2f + k * 0.07f
                 if (x < xf - 0.1f) drawLine(Pal.lineSoft, iso.p(x, MY0 + 0.4f, MZ1), iso.p(x, MY1 - 0.4f, MZ1), strokeWidth = lw)
             }
-            var x = RW + 0.2f
-            while (x < xf - 0.12f) {
-                drawLine(Pal.lineSoft, iso.p(x, MY1, MZ0 + 0.25f), iso.p(x, MY1, MZ0 + 0.7f), strokeWidth = lw)
-                x += 0.08f
-            }
         }
     }
     face(quad(iso.p(xf, MY0, MZ1), iso.p(xf, MY1, MZ1), iso.p(xf, MY1, MZ0), iso.p(xf, MY0, MZ0)), Color(0xFFF4F4F7))
-    val bez = quad(iso.p(xf, MY0 + 0.14f, MZ1 - 0.12f), iso.p(xf, MY1 - 0.14f, MZ1 - 0.12f), iso.p(xf, MY1 - 0.14f, MZ0 + 0.34f), iso.p(xf, MY0 + 0.14f, MZ0 + 0.34f))
-    drawPath(bez, Color(0xFFDCDCE1)); drawPath(bez, Pal.lineSoft, style = Stroke(lw))
-
-    val sy0 = MY0 + 0.22f; val sy1 = MY1 - 0.22f; val sz0 = MZ0 + 0.42f; val sz1 = MZ1 - 0.2f
-        val shell = quad(iso.p(xf, MY0 + 0.1f, MZ0 + 0.3f), iso.p(xf, MY1 - 0.1f, MZ0 + 0.3f), iso.p(xf, MY1 - 0.1f, MZ1 - 0.1f), iso.p(xf, MY0 + 0.1f, MZ1 - 0.1f))
-        drawPath(shell, Color(0xFFE8E9EC)); drawPath(shell, Pal.line, style = Stroke(lw))
-        val bezel = quad(iso.p(xf, sy0 - 0.12f, sz1 + 0.12f), iso.p(xf, sy1 + 0.12f, sz1 + 0.12f), iso.p(xf, sy1 + 0.12f, sz0 - 0.12f), iso.p(xf, sy0 - 0.12f, sz0 - 0.12f))
-        drawPath(bezel, Color.White); drawPath(bezel, Pal.lineSoft, style = Stroke(lw))
-        val scr = quad(iso.p(xf, sy0, sz1), iso.p(xf, sy1, sz1), iso.p(xf, sy1, sz0), iso.p(xf, sy0, sz0))
-        drawPath(scr, if (on) Color(0xFFFFEADC) else Color(0xFF15171B))
-        val screenGlow = if (on) 0.76f + 0.12f * sin(t * 2.4f) else 0f
-        drawPath(scr, Pal.orange.copy(alpha = 0.26f * screenGlow), style = Stroke(2.dp.toPx()))
-
-        val cols = 16; val rows = 11
-
-    val cw = (sy1 - sy0) / cols; val ch = (sz1 - sz0) / rows
-    val strong = Path(); val dim = Path()
-    fun dot(path: Path, c: Int, r: Int) {
-        val yc = sy1 - (c + 0.5f) * cw; val zc = sz1 - (r + 0.5f) * ch
-        val hw = cw * 0.36f; val hh = ch * 0.36f
-        val a = iso.p(xf, yc + hw, zc + hh); val b = iso.p(xf, yc - hw, zc + hh)
-        val c2 = iso.p(xf, yc - hw, zc - hh); val d2 = iso.p(xf, yc + hw, zc - hh)
-        path.moveTo(a.x, a.y); path.lineTo(b.x, b.y); path.lineTo(c2.x, c2.y); path.lineTo(d2.x, d2.y); path.close()
+    // New panel proportions: centered, inset display matching the side instrument face.
+    val px0 = MY0 + 0.18f
+    val px1 = MY1 - 0.18f
+    val pz0 = MZ0 + 0.26f
+    val pz1 = MZ1 - 0.18f
+    drawAiPanel(iso, xf, px0, px1, pz0, pz1, on, runT, offT, t, lw, iso.s)
+    // Side vent slots and retaining screws below the new screen.
+    for (k in 0 until 6) {
+        val z = pz0 - 0.08f - k * 0.055f
+        drawLine(Pal.lineSoft, iso.p(xf, px0 + 0.08f, z), iso.p(xf, px1 - 0.08f, z), strokeWidth = lw)
     }
-    fun glyph(chr: Char, c0: Int, r0: Int) {
-        val g = GLYPHS[chr] ?: return
-        for (r in g.indices) for (c in g[r].indices) if (g[r][c] == '1') dot(strong, c0 + c, r0 + r)
-    }
-    if (on) {
-        val tc = bt.coerceAtLeast(0f)
-        if (tc < 2.6f) {
-            if (tc > 0.7f && !(tc in 0.9f..1.0f)) { glyph('A', 3, 1); glyph('I', 9, 1) }
-            val prog = ((tc - 0.7f) / 1.7f).coerceIn(0f, 1f)
-            val n = (prog * 10).toInt()
-            for (c in 0 until 10) dot(if (c < n) strong else dim, 3 + c, 9)
-        } else {
-            val period = 1.7f
-            val n = (tc / period).toInt()
-            val f = (tc - n * period) / period
-            for (slot in 0..3) {
-                val mi = n - 3 + slot
-                if (mi < 0) continue
-                val row = 1 + 2 * slot
-                val ai = mi % 2 == 1
-                val len = 5 + (mi * 5 + 3) % 8
-                val shown = if (mi == n) ((f / 0.7f).coerceIn(0f, 1f) * len).toInt() else len
-                for (k in 0 until shown) {
-                    if (k % 5 != 4) dot(if (ai) strong else dim, if (ai) 14 - k else 1 + k, row)
-                }
-            }
+    for (y in listOf(MY0 + 0.12f, MY1 - 0.12f)) {
+        for (z in listOf(MZ0 + 0.12f, MZ1 - 0.12f)) {
+            drawCircle(Pal.line, 1.1.dp.toPx(), iso.p(xf, y, z))
         }
-        drawPath(dim, Pal.orange.copy(alpha = 0.45f))
-        drawPath(strong, Pal.orangeDeep)
     }
-    drawLine(Color(0xFF3A3A40), iso.p(xf, MY0 + 0.7f, MZ0 + 0.17f), iso.p(xf, MY1 - 0.7f, MZ0 + 0.17f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
-
-    val ledOn = on && sin(t * 3f) > -0.2f
-    drawCircle(if (ledOn) Pal.orange else Color(0xFFC8C8CE), 2.dp.toPx(), iso.p(xf, MY0 + 0.3f, MZ0 + 0.17f))
 }
 
 
@@ -1212,69 +1247,7 @@ fun RackScene(
         drawPath(sideQuad(displayY0 - 0.15f, displayY1 + 0.15f, aiBottom - 0.25f, aiTop + 0.12f, 0.035f), Color(0xFFFDFDFE))
         drawPath(sideQuad(displayY0 - 0.15f, displayY1 + 0.15f, aiBottom - 0.25f, aiTop + 0.12f, 0.035f), Pal.line, style = Stroke(lw))
         drawPath(sideQuad(displayY0 - 0.06f, displayY1 + 0.06f, aiBottom - 0.04f, aiTop + 0.06f), Color(0xFFD1D2D7))
-        val aiStopping = !live && aiRunT > 0f && aiOffT < RackPowerVisuals.SHUTDOWN_SECONDS
-        val shutdown = if (aiStopping) RackPowerVisuals.shutdownProgress(aiOffT) else 0f
-        val aiCenterZ = (aiTop + aiBottom) * 0.5f
-        val aiHalfHeight = (aiTop - aiBottom) * 0.5f * if (aiStopping) RackPowerVisuals.shutdownAperture(aiOffT) else 1f
-        val aiWindow = sideQuad(displayY0, displayY1, aiCenterZ - aiHalfHeight, aiCenterZ + aiHalfHeight)
-        drawPath(sideQuad(displayY0, displayY1, aiBottom, aiTop), Color(0xFF15171B))
-        if (live || aiStopping) drawPath(aiWindow, lerp(Color(0xFFFFE8D0), Color(0xFF15171B), shutdown))
-        clipPath(aiWindow) {
-            if (!live && !aiStopping) return@clipPath
-            if (aiRunT < 2.9f) {
-                val aiCell = min((displayY1 - displayY0 - 0.25f) / glyphCols("AI"), (aiTop - aiBottom - 0.35f) / 7f)
-                val reveal = RackPowerVisuals.bootProgress(aiRunT)
-                var pixelIndex = 0
-                val totalPixels = "AI".sumOf { ch -> GLYPHS.getValue(ch).sumOf { row -> row.count { it == '1' } } }
-                var y = displayY1 - 0.16f
-                for (ch in "AI") {
-                    val glyph = GLYPHS.getValue(ch)
-                    for (row in glyph.indices) for (column in glyph[row].indices) {
-                        if (glyph[row][column] != '1') continue
-                        if (pixelIndex++ >= (totalPixels * reveal).toInt()) continue
-                        val y0 = y - column * aiCell
-                        val z0 = aiTop - 0.2f - row * aiCell
-                        drawPath(sideQuad(y0 - aiCell * 0.88f, y0, z0 - aiCell * 0.88f, z0), Pal.orangeDeep)
-                    }
-                    y -= (glyph[0].length + 1) * aiCell
-                }
-            } else {
-                val columns = 18
-                val cell = (displayY1 - displayY0 - 0.2f) / columns
-                val rowHeight = (aiTop - aiBottom - 0.18f) / 12f
-                fun pixel(column: Int, row: Float, color: Color) {
-                    val y = displayY1 - 0.1f - column * cell
-                    val z = aiTop - 0.1f - row * rowHeight
-                    drawPath(sideQuad(y - cell * 0.75f, y, z - rowHeight * 0.7f, z), color)
-                }
-                val stepTime = 1.55f
-                val elapsed = aiRunT - 2.9f
-                val message = (elapsed / stepTime).toInt()
-                val progress = (elapsed % stepTime) / stepTime
-                val scroll = ((progress - 0.85f) / 0.15f).coerceIn(0f, 1f)
-                for (slot in 0..3) {
-                    val id = message - 3 + slot
-                    if (id < 0) continue
-                    val assistant = id % 2 == 1
-                    val length = 9 + (id * 3 % 7)
-                    val shown = if (id == message) (length * (progress / 0.72f).coerceIn(0f, 1f)).toInt() else length
-                    for (column in 0 until shown) {
-                        if (column % 5 != 4) {
-                            pixel(if (assistant) columns - 1 - column else column, 1f + slot * 2.2f - scroll * 2.2f, if (assistant) Pal.orangeDeep else Color(0xFFBC9A7E))
-                        }
-                    }
-                }
-                for (dot in 0..2) {
-                    pixel(7 + dot * 2, 10.5f, Pal.orangeDeep.copy(alpha = if ((elapsed * 5f).toInt() % 3 == dot) 1f else 0.25f))
-                }
-            }
-        }
-        if (aiStopping) {
-            drawLine(Pal.orange.copy(alpha = (1f - shutdown) * 0.9f),
-                iso.p(RW, displayY0 + 0.08f, aiCenterZ), iso.p(RW, displayY1 - 0.08f, aiCenterZ),
-                (0.012f + 0.025f * (1f - shutdown)) * s, cap = StrokeCap.Round)
-        }
-        drawLine(Pal.ink, iso.p(RW, displayY1 - 0.5f, aiBottom - 0.14f), iso.p(RW, displayY0 + 0.5f, aiBottom - 0.14f), 2.dp.toPx(), cap = StrokeCap.Round)
+        drawAiPanel(iso, RW, displayY0, displayY1, aiBottom, aiTop, live, aiRunT, aiOffT, t, lw, s)
         val sideItems = listOf(
             Triple("TOTAL TOK.", fmtTokens(totalTokens), 5.08f),
             Triple("TTFT MS", if (ttftMs >= 0) "$ttftMs" else "--", 3.58f),
@@ -1318,7 +1291,7 @@ fun RackScene(
         }
         drawPath(serviceMark, Pal.line, style = Stroke(lw))
         if (macA.value > 0.01f) {
-            drawMac(iso, macA.value, live, bootT, t, lw)
+            drawMac(iso, macA.value, live, aiRunT, aiOffT, t, lw)
         }
 
         // top deck: hinged lid carrying the fans, cavity + antennas underneath
