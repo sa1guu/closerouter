@@ -3,6 +3,9 @@ package com.closerouter.app.proxy
 import com.closerouter.app.data.ProviderProfile
 import com.closerouter.app.stats.TokenEstimator
 import com.closerouter.app.stats.UsageParser
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -18,12 +21,40 @@ object SpeedTester {
         val error: String = ""
     )
 
+    internal fun buildRequest(profile: ProviderProfile): okhttp3.Request {
+        val path = when (profile.apiType) {
+            "openai" -> "/v1/chat/completions"
+            "responses" -> "/v1/responses"
+            "anthropic" -> "/v1/messages"
+            else -> throw IllegalArgumentException("不支持的 API 格式：${profile.apiType}")
+        }
+        val body = buildJsonObject {
+            put("model", JsonPrimitive(profile.model))
+            put("stream", JsonPrimitive(true))
+            when (profile.apiType) {
+                "openai", "anthropic" -> {
+                    put("messages", buildJsonArray {
+                        add(buildJsonObject {
+                            put("role", JsonPrimitive("user"))
+                            put("content", JsonPrimitive("Say OK"))
+                        })
+                    })
+                    put("max_tokens", JsonPrimitive(16))
+                }
+                "responses" -> {
+                    put("input", JsonPrimitive("Say OK"))
+                    put("max_output_tokens", JsonPrimitive(16))
+                }
+            }
+        }
+        return Upstream.buildRequest(profile, path, body.toString())
+    }
+
     suspend fun run(profile: ProviderProfile): Result = withContext(Dispatchers.IO) {
-        val body = """{"model":"${profile.model}","messages":[{"role":"user","content":"Say OK"}],"max_tokens":16,"stream":true}"""
         val startNs = System.nanoTime()
         fun ms() = (System.nanoTime() - startNs) / 1_000_000
         try {
-            val req = Upstream.buildRequest(profile, "/v1/chat/completions", body)
+            val req = buildRequest(profile)
             Upstream.client.newCall(req).execute().use { resp ->
                 if (resp.code !in 200..299) {
                     val errBody = resp.body?.string()?.take(200) ?: ""

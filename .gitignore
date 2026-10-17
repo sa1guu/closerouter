@@ -19,3 +19,4 @@ android/local.properties
 # 系统/编辑器
 Thumbs.db
 .DS_Store
+.zcode/

@@ -15,7 +15,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -108,7 +109,8 @@ fun MainScreen() {
     var editingProvider by remember { mutableStateOf<ProviderProfile?>(null) }
     var showEditor by remember { mutableStateOf(false) }
     var providerMenu by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf(0) }
+    val pagerState = rememberPagerState(pageCount = { BAY_COUNT })
+    val selected by remember { derivedStateOf { pagerState.currentPage } }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { batteryTick++ }
     val batteryOk = remember(batteryTick) {
@@ -140,14 +142,12 @@ fun MainScreen() {
         "电脑通过 USB 或局域网连接到这里",
         "今日用量与最近一次响应速度",
         "向当前提供方发一次测试请求",
-        "把电脑助手拷到电脑双击即可连接",
+        "导出内置 Windows USB / LAN 连接工具",
         "防止系统在后台杀死转发服务"
     )
 
     val density = LocalDensity.current
     var upperH by remember { mutableFloatStateOf(0f) }
-    // 功能页内容滚动状态（页面整体完全固定，只有这里的内容能滚）
-    val pageScroll = rememberScrollState()
 
     BoxWithConstraints(
         Modifier
@@ -156,13 +156,13 @@ fun MainScreen() {
             .systemBarsPadding()
     ) {
         val hPx = with(density) { maxHeight.toPx() }
-        // 功能页固定位置：紧跟机柜下方，没有任何手势能移动它
+        // 功能区保持固定高度和位置，左右分页与每页纵向滚动各自独立。
         val loPx = with(density) { 48.dp.toPx() }
         val hiPx = hPx - with(density) { 92.dp.toPx() }
         val gapPx = with(density) { 6.dp.toPx() }
         fun sheetTop() = (upperH + gapPx).coerceIn(loPx, hiPx)
 
-        // the animation page is pinned; only the sheet below it moves
+        // The cabinet stays fixed while the lower panel pages horizontally.
         Column(
             Modifier
                 .fillMaxWidth()
@@ -187,189 +187,189 @@ fun MainScreen() {
                 ttftMs = lastTtft,
                 totalTokens = totalTokens,
                 onPower = { if (running) ProxyService.stop(app) else ProxyService.start(app) },
-                onSelect = { selected = it },
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f / 1.22f)
+                onSelect = { page ->
+                    scope.launch { pagerState.animateScrollToPage(page) }
+                },
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f / 1.04f)
             )
         }
 
-        Column(
-            Modifier
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
                 .offset { IntOffset(0, sheetTop().roundToInt()) }
                 .fillMaxWidth()
                 .height(with(density) { (hPx - sheetTop()).toDp() })
-                .background(Color.White, RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-        ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 8.dp)
-            ) {
-                Box(
-                    Modifier.align(Alignment.CenterHorizontally).width(36.dp).height(4.dp)
-                        .background(Pal.lineSoft, RoundedCornerShape(2.dp))
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "0${selected + 1} / 0$BAY_COUNT · ${BAY_CODES[selected]}",
-                    fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = Pal.orangeDeep, fontWeight = FontWeight.Bold
-                )
-                Text(titles[selected], fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            }
-            Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(pageScroll)
-                    .padding(start = 20.dp, end = 20.dp, bottom = 20.dp)
-            ) {
-                Text(subtitles[selected], fontSize = 12.sp, color = Pal.mute)
-                Spacer(Modifier.height(14.dp))
-
-                when (selected) {
-                    0 -> {
-                        Text(
-                            if (running) "● 运行中" else "○ 已停止",
-                            fontSize = 16.sp, fontWeight = FontWeight.Medium
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Button(onClick = {
-                            if (running) ProxyService.stop(app) else ProxyService.start(app)
-                        }) { Text(if (running) "停止转发" else "启动转发") }
-                    }
-                    1 -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box {
-                                OutlinedButton(onClick = { providerMenu = true }) {
-                                    Text(active?.name ?: "（未配置）", maxLines = 1)
-                                }
-                                DropdownMenu(
-                                    expanded = providerMenu,
-                                    onDismissRequest = { providerMenu = false },
-                                    containerColor = Pal.front,
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, Pal.line)
-                                ) {
-                                    providers.forEach { p ->
-                                        DropdownMenuItem(
-                                            text = { Text((if (p.id == active?.id) "✓ " else "　") + p.name) },
-                                            onClick = {
-                                                app.providerStore.setActive(p.id)
-                                                providerMenu = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            OutlinedButton(onClick = {
-                                editingProvider = active
-                                showEditor = true
-                            }) { Text("编辑") }
-                            Spacer(Modifier.width(8.dp))
-                            OutlinedButton(onClick = {
-                                editingProvider = ProviderProfile(name = "新提供方")
-                                showEditor = true
-                            }) { Text("新建") }
-                        }
-                        active?.let {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "${it.apiType} · ${it.baseUrl} · ${it.model}",
-                                fontSize = 11.sp, color = Pal.mute, fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    }
-                    2 -> {
-                        Text("USB: http://127.0.0.1:${App.port}/v1", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                        Text("LAN: http://${lanIp()}:${App.port}/v1", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                        Spacer(Modifier.height(10.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            OutlinedTextField(
-                                value = portText,
-                                onValueChange = { portText = it.filter(Char::isDigit).take(5) },
-                                label = { Text("端口") },
-                                singleLine = true,
-                                modifier = Modifier.width(140.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            OutlinedButton(onClick = {
-                                val p = portText.toIntOrNull()
-                                if (p != null && p in 1024..65535) {
-                                    app.setPort(p)
-                                    message = "端口已改为 $p" + if (running) "（服务已重启）" else ""
-                                } else message = "端口无效"
-                            }) { Text("应用") }
-                        }
-                    }
-                    3 -> {
-                        StatRow("今日请求", "${today.requests}")
-                        StatRow("今日 Token", "输入 ${today.inputTokens} / 输出 ${today.outputTokens}")
-                        StatRow("最近 TTFT", if (lastTtft >= 0) "$lastTtft ms" else "-")
-                        StatRow("最近 tok/s", if (lastTokS >= 0) "%.1f".format(lastTokS) else "-")
-                    }
-                    4 -> {
-                        Button(
-                            onClick = {
-                                val p = app.providerStore.active()
-                                if (p == null || !p.usable) { speedResult = "请先配置提供方"; return@Button }
-                                speedRunning = true
-                                speedOk = false
-                                speedResult = "测速中…"
-                                scope.launch {
-                                    val r = SpeedTester.run(p)
-                                    if (r.ok) {
-                                        speedResult = "TTFT ${r.ttftMs} ms · %.1f tok/s · 总耗时 ${r.totalMs} ms".format(r.tokPerSec)
-                                        speedBrief = "${r.ttftMs}MS"
-                                        speedOk = true
-                                    } else {
-                                        speedResult = "测速失败：${r.error}"
-                                        speedBrief = "FAIL"
-                                    }
-                                    speedRunning = false
-                                }
-                            },
-                            enabled = !speedRunning
-                        ) { Text("一键测速") }
-                        if (speedResult.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(speedResult, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        }
-                    }
-                    5 -> {
-                        OutlinedButton(onClick = {
-                            message = runCatching { ExeExporter.export(app) }.getOrElse { "导出失败：${it.message}" }
-                            exported = !message.startsWith("导出失败")
-                        }) { Text("导出电脑助手 (closerouter.exe)") }
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "导出到 Download/CloseRouter/，拷到电脑双击即可自动连接，无需输命令。",
-                            fontSize = 11.sp, color = Pal.mute
-                        )
-                    }
-                    else -> {
-                        OutlinedButton(onClick = {
-                            runCatching {
-                                val pm = app.getSystemService(PowerManager::class.java)
-                                if (pm?.isIgnoringBatteryOptimizations(app.packageName) != true) {
-                                    app.startActivity(
-                                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-                                            .setData(Uri.parse("package:${app.packageName}"))
-                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    )
-                                } else message = "已忽略电池优化"
-                            }
-                        }) { Text(if (batteryOk) "已忽略电池优化 ✓" else "防后台杀死（忽略电池优化）") }
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "vivo / 小米等机型还需在系统设置里手动允许本应用「后台运行 / 自启动」。",
-                            fontSize = 11.sp, color = Pal.mute
-                        )
-                    }
+                .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+                .background(Color.White),
+            beyondViewportPageCount = 1,
+            verticalAlignment = Alignment.Top
+        ) { page ->
+            Column(Modifier.fillMaxSize()) {
+                ControlHeader(page, titles[page], subtitles[page]) { target ->
+                    scope.launch { pagerState.animateScrollToPage(target) }
                 }
+                HorizontalDivider(color = Color(0xFFF0F0EE), thickness = 1.dp)
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 24.dp)
+                ) {
+                    when (page) {
+                        0 -> {
+                            ControlStatus(
+                                if (running) "转发服务已启动" else "机柜待机中",
+                                if (running) "USB 与局域网端点已就绪，机柜正在运行。" else "启动后点亮机柜，并开启本机 API 转发。",
+                                running, if (running) "ONLINE" else "STANDBY"
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            ControlAction(if (running) "停止转发" else "启动转发", "PWR", {
+                                if (running) ProxyService.stop(app) else ProxyService.start(app)
+                            })
+                            Spacer(Modifier.height(14.dp))
+                            ControlCard {
+                                ControlValue("当前提供方", active?.name ?: "尚未配置")
+                                ControlValue("服务端口", ":${App.port}", accent = running)
+                            }
+                        }
+                        1 -> {
+                            ControlCard {
+                                ControlValue("当前提供方 / ACTIVE PROVIDER", active?.name ?: "尚未配置", accent = true)
+                                HorizontalDivider(color = Color(0xFFE7E7E4))
+                                ControlValue("API 格式", when (active?.apiType) { "responses" -> "OpenAI Responses"; "anthropic" -> "Anthropic Messages"; else -> "OpenAI Chat" })
+                                ControlValue("模型", active?.model?.ifBlank { "未填写" } ?: "未填写")
+                                ControlValue("上游地址", active?.baseUrl ?: "未填写")
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            Box {
+                                ControlAction("切换提供方", "SEL", { providerMenu = true }, secondary = true)
+                                DropdownMenu(expanded = providerMenu, onDismissRequest = { providerMenu = false },
+                                    containerColor = Color.White, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, Pal.lineSoft)) {
+                                    providers.forEach { p ->
+                                        DropdownMenuItem(text = { Text((if (p.id == active?.id) "✓  " else "    ") + p.name) }, onClick = {
+                                            app.providerStore.setActive(p.id)
+                                            providerMenu = false
+                                        })
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                ControlAction("编辑配置", "EDIT", { editingProvider = active; showEditor = true }, Modifier.weight(1f), secondary = true)
+                                ControlAction("新建", "ADD", { editingProvider = ProviderProfile(name = "新提供方"); showEditor = true }, Modifier.weight(1f))
+                            }
+                        }
+                        2 -> {
+                            ControlCard {
+                                ControlValue("USB / 本机地址", "http://127.0.0.1:${App.port}/v1", accent = true)
+                                HorizontalDivider(color = Color(0xFFE7E7E4))
+                                ControlValue("LAN / 局域网地址", "http://${lanIp()}:${App.port}/v1")
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                OutlinedTextField(value = portText, onValueChange = { portText = it.filter(Char::isDigit).take(5) },
+                                    label = { Text("服务端口", fontSize = 11.sp) }, singleLine = true,
+                                    modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp),
+                                    textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 15.sp),
+                                    colors = OutlinedTextFieldDefaults.colors(unfocusedBorderColor = Color(0xFFDEDFDF), focusedBorderColor = Pal.orangeDeep))
+                                ControlAction("应用", "SET", {
+                                    val port = portText.toIntOrNull()
+                                    if (port != null && port in 1024..65535) {
+                                        app.setPort(port)
+                                        message = "端口已改为 $port" + if (running) "（服务已重启）" else ""
+                                    } else message = "请输入 1024–65535 之间的端口"
+                                }, Modifier.weight(1f))
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            ControlHint("地址可长按复制。修改端口后，电脑端需要使用相同端口连接。")
+                        }
+                        3 -> {
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                ControlMetric("今日请求", "${today.requests}", "REQ", Modifier.weight(1f))
+                                ControlMetric("最近首字响应", if (lastTtft >= 0) "$lastTtft" else "--", "MS", Modifier.weight(1f))
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                ControlMetric("输入 Token", "${today.inputTokens}", "TOK", Modifier.weight(1f))
+                                ControlMetric("输出 Token", "${today.outputTokens}", "TOK", Modifier.weight(1f))
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            ControlCard { ControlValue("最近生成速度", if (lastTokS >= 0) "%.1f tok/s".format(lastTokS) else "等待请求数据", accent = lastTokS >= 0) }
+                        }
+                        4 -> {
+                            ControlCard {
+                                ControlValue("测速目标", active?.name ?: "请先配置提供方")
+                                ControlValue("端点格式", active?.apiType ?: "--")
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            ControlAction(if (speedRunning) "正在测速…" else "一键测速", "TEST", {
+                                val profile = app.providerStore.active()
+                                if (profile == null || !profile.usable) {
+                                    speedResult = "请先配置提供方"
+                                } else {
+                                    speedRunning = true
+                                    speedOk = false
+                                    speedResult = "正在等待上游响应…"
+                                    scope.launch {
+                                        try {
+                                            val result = SpeedTester.run(profile)
+                                            if (result.ok) {
+                                                speedResult = "TTFT ${result.ttftMs} ms · %.1f tok/s · 总耗时 ${result.totalMs} ms".format(result.tokPerSec)
+                                                speedBrief = "${result.ttftMs}MS"
+                                                speedOk = true
+                                            } else {
+                                                speedResult = "测速失败：${result.error}"
+                                                speedBrief = "FAIL"
+                                            }
+                                        } finally { speedRunning = false }
+                                    }
+                                }
+                            }, enabled = !speedRunning)
+                            Spacer(Modifier.height(10.dp))
+                            ControlHint("使用当前所选端点发送一次短流式请求，会消耗少量 Token。")
+                            if (speedResult.isNotEmpty()) {
+                                Spacer(Modifier.height(12.dp))
+                                ControlStatus(if (speedOk) "测速完成" else if (speedRunning) "正在测试" else "测试结果", speedResult, speedOk, if (speedOk) "PASS" else if (speedRunning) "BUSY" else "INFO")
+                            }
+                        }
+                        5 -> {
+                            ControlCard {
+                                ControlValue("WINDOWS / 电脑端", "CloseRouter_WebUI.exe")
+                                ControlValue("导出目录", "Download/CloseRouter/")
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            ControlAction("导出电脑助手", "EXE", {
+                                message = runCatching { ExeExporter.export(app) }.getOrElse { "导出失败：${it.message}" }
+                                exported = !message.startsWith("导出失败")
+                            })
+                            Spacer(Modifier.height(12.dp))
+                            ControlHint("拷到电脑后双击打开，选择 USB 或局域网模式连接。无需安装 Python。")
+                        }
+                        else -> {
+                            ControlStatus(if (batteryOk) "已允许后台运行" else "后台保护待设置",
+                                if (batteryOk) "已忽略电池优化，可降低后台服务被中断的概率。" else "关闭电池优化，降低息屏后转发服务被终止的概率。",
+                                batteryOk, if (batteryOk) "READY" else "SETUP")
+                            Spacer(Modifier.height(12.dp))
+                            ControlAction(if (batteryOk) "后台保护已启用" else "设置后台保护", "KEEP", {
+                                runCatching {
+                                    val manager = app.getSystemService(PowerManager::class.java)
+                                    if (manager?.isIgnoringBatteryOptimizations(app.packageName) != true) {
+                                        app.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                            .setData(Uri.parse("package:${app.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                                    } else message = "已忽略电池优化"
+                                }.onFailure { message = "无法打开系统设置：${it.message}" }
+                            }, secondary = batteryOk)
+                            Spacer(Modifier.height(12.dp))
+                            ControlHint("vivo / 小米等机型，还需在系统设置中允许本应用“后台运行 / 自启动”。")
+                        }
+                    }
 
-                if (message.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    Text(message, fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = Pal.orangeDeep)
+                    if (message.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        ControlCard { Text(message, fontSize = 11.sp, color = Pal.orangeDeep, lineHeight = 17.sp) }
+                    }
                 }
             }
         }
@@ -464,8 +464,8 @@ fun ProviderEditorDialog(
                 Box(Modifier.fillMaxWidth().height(2.dp).background(Pal.orange.copy(alpha = 0.7f)))
                 Spacer(Modifier.height(14.dp))
                 OutlinedTextField(name, { name = it }, label = { Text("名称") }, singleLine = true, modifier = gap, shape = fieldShape, colors = fieldColors)
-                OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("baseUrl") }, singleLine = true, modifier = gap, shape = fieldShape, colors = fieldColors)
-                OutlinedTextField(apiKey, { apiKey = it }, label = { Text("apiKey") }, singleLine = true, modifier = gap, shape = fieldShape, colors = fieldColors)
+                OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("上游地址 / Base URL") }, singleLine = true, modifier = gap, shape = fieldShape, colors = fieldColors)
+                OutlinedTextField(apiKey, { apiKey = it }, label = { Text("API 密钥") }, visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(), singleLine = true, modifier = gap, shape = fieldShape, colors = fieldColors)
                 OutlinedTextField(model, { model = it }, label = { Text("模型") }, singleLine = true, modifier = gap, shape = fieldShape, colors = fieldColors)
                 Text("API 格式 / ENDPOINT", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = Pal.mute, letterSpacing = 1.sp)
                 Spacer(Modifier.height(6.dp))

@@ -36,12 +36,12 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 object Pal {
-    val bg = Color(0xFFF6F5F7)
+    val bg = Color(0xFFF8F8F8)
     val line = Color(0xFFB4B4BB)
-    val lineSoft = Color(0xFFD8D8DD)
-    val front = Color(0xFFFCFCFD)
-    val side = Color(0xFFEDEDF0)
-    val top = Color(0xFFF4F4F6)
+    val lineSoft = Color(0xFFD2D4DA)
+    val front = Color(0xFFFFFEFD)
+    val side = Color(0xFFE9EAEE)
+    val top = Color(0xFFF7F8FA)
     val orange = Color(0xFFF28A2E)
     val orangeDeep = Color(0xFFE8741C)
     val ink = Color(0xFF3A3A40)
@@ -52,6 +52,7 @@ const val BAY_COUNT = 7
 val BAY_CODES = listOf("PWR", "PROV", "PORT", "TOKEN", "SPEED", "EXPORT", "KEEP")
 
 private const val K = 0.8660254f
+private const val Z_SCALE = 0.82f
 private const val RW = 6f
 private const val RD = 2.8f
 private const val RH = 7.2f
@@ -62,20 +63,20 @@ private const val BAY_H = 0.66f
 
 private const val BAY_D = 1.4f
 private const val MAC_D = 1.0f
-private const val MY0 = 0.4f
-private const val MY1 = 2.4f
-private const val MZ0 = 5.3f
-private const val MZ1 = 6.8f
+private const val MY0 = 0.96f
+private const val MY1 = 2.52f
+private const val MZ0 = 5.38f
+private const val MZ1 = 6.72f
 private const val FAN_N = 4
 
 private fun bayTop(i: Int) = RH - 1.75f - i * 0.72f
 private const val PWR_X = 1.2f
 private const val PWR_R = 0.55f
 private const val JACK_X = 5.8f
-private fun pwrZ() = RH - 0.875f
+private fun pwrZ() = RH - 0.73f
 
 private open class Iso(val s: Float, val cx: Float, val cy: Float) {
-    open fun p(x: Float, y: Float, z: Float) = Offset(cx + (x - y) * K * s, cy + (x + y) * 0.5f * s - z * s)
+    open fun p(x: Float, y: Float, z: Float) = Offset(cx + (x - y) * K * s, cy + (x + y) * 0.5f * s - z * Z_SCALE * s)
     fun f(x: Float, z: Float) = p(x, RD, z)
 }
 
@@ -95,12 +96,14 @@ private const val CAV = 1.25f
 private const val LID_Y = 0.3f
 
 private fun isoFor(w: Float, h: Float, extra: Float = 0f): Iso {
-    val spanH = RH + (RW + RD + 1.6f) / 2f + extra
-    val s = min(w / 10.2f, h / (spanH + 0.3f))
     val xMin = (-0.8f - (RD + 0.8f)) * K
-    val xMax = (RW + 1.6f) * K
+    val xMax = (RW + 0.8f + 0.8f) * K
+    val zTop = (RH + extra) * Z_SCALE
+    val yTop = -zTop
+    val yBottom = (RW + RD + 1.6f) * 0.5f
+    val s = min(w * 0.9f / (xMax - xMin), h * 0.9f / (yBottom - yTop))
     val cx = w / 2f - (xMin + xMax) / 2f * s
-    val cy = (h - spanH * s) / 2f + (RH + extra) * s
+    val cy = h / 2f - (yTop + yBottom) / 2f * s
     return Iso(s, cx, cy)
 }
 
@@ -116,17 +119,17 @@ private fun inQuad(o: Offset, q: List<Offset>): Boolean {
 
 private fun Iso.unprojY(o: Offset, y: Float): Pair<Float, Float> {
     val x = y + (o.x - cx) / (K * s)
-    return x to ((x + y) * 0.5f * s + cy - o.y) / s
+    return x to ((x + y) * 0.5f * s + cy - o.y) / (s * Z_SCALE)
 }
 
 private fun Iso.unprojX(o: Offset, x: Float): Pair<Float, Float> {
     val y = x - (o.x - cx) / (K * s)
-    return y to ((x + y) * 0.5f * s + cy - o.y) / s
+    return y to ((x + y) * 0.5f * s + cy - o.y) / (s * Z_SCALE)
 }
 
 private fun Iso.unprojZ(o: Offset, z: Float): Pair<Float, Float> {
     val d = (o.x - cx) / (K * s)
-    val sum = 2f * ((o.y - cy) / s + z)
+    val sum = 2f * ((o.y - cy) / s + z * Z_SCALE)
     return (sum + d) / 2f to (sum - d) / 2f
 }
 
@@ -163,6 +166,32 @@ private fun DrawScope.planeText(
     val mat = Matrix()
     mat.values[Matrix.ScaleX] = K
     mat.values[Matrix.SkewY] = 0.5f
+    mat.values[Matrix.ScaleY] = Z_SCALE
+    mat.values[Matrix.TranslateX] = origin.x
+    mat.values[Matrix.TranslateY] = origin.y
+    withTransform({ transform(mat) }) {
+        drawText(
+            m, text, Offset.Zero,
+            TextStyle(
+                fontFamily = FontFamily.Monospace,
+                fontSize = fs.toSp(),
+                color = color,
+                fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
+            ),
+            softWrap = false, maxLines = 1
+        )
+    }
+}
+
+private fun DrawScope.sideText(
+    m: TextMeasurer, iso: Iso, text: String, yRight: Float, zMid: Float,
+    fs: Float, color: Color, bold: Boolean = false
+) {
+    val origin = iso.p(RW, yRight, zMid + (fs * 1.2f / 2f) / iso.s)
+    val mat = Matrix()
+    mat.values[Matrix.ScaleX] = K
+    mat.values[Matrix.SkewY] = -0.5f
+    mat.values[Matrix.ScaleY] = Z_SCALE
     mat.values[Matrix.TranslateX] = origin.x
     mat.values[Matrix.TranslateY] = origin.y
     withTransform({ transform(mat) }) {
@@ -318,28 +347,34 @@ private fun fanGeom(k: Int, pop0: Float): FloatArray? = when (k) {
 private fun DrawScope.drawFan(
     iso: Iso, fx: Float, fy: Float, z: Float, sc: Float, angDeg: Float, fan: Float, glow: Float, lw: Float
 ) {
-    val outer = iso.floorCircle(fx, fy, z, 0.807f * sc)
-    drawPath(outer, Pal.front)
-    drawPath(outer, Pal.line, style = Stroke(lw))
-    val well = iso.floorCircle(fx, fy, z, 0.714f * sc)
-    drawPath(well, Color(0xFFDCDCE1))
+    val frame = iso.floorCircle(fx, fy, z, 0.81f * sc)
+    drawPath(frame, Color(0xFFF0F1F3))
+    drawPath(frame, Color.White, style = Stroke(3.2.dp.toPx()))
+    drawPath(frame, Pal.line, style = Stroke(lw * 1.15f))
+    for (j in 0 until 6) {
+        val a = (2.0 * PI * j / 6).toFloat()
+        drawCircle(Pal.line, 1.dp.toPx(), iso.p(fx + 0.75f * sc * cos(a), fy + 0.75f * sc * sin(a), z))
+    }
+    val well = iso.floorCircle(fx, fy, z, 0.68f * sc)
+    drawPath(well, Brush.linearGradient(listOf(Color(0xFFB8BCC1), Color(0xFFEBECEE)), iso.p(fx, fy - sc, z), iso.p(fx, fy + sc, z)))
+    drawPath(iso.floorCircle(fx, fy, z, 0.7f * sc), Color.White.copy(alpha = 0.75f), style = Stroke(lw))
     drawPath(well, Pal.lineSoft, style = Stroke(lw))
-    if (fan > 0.02f) drawPath(iso.floorCircle(fx, fy, z, 0.68f * sc), Pal.orange.copy(alpha = 0.12f * fan * glow))
-    val bladeColor = lerp(Color(0xFFB9B9C1), Pal.orange, fan)
+    if (fan > 0.02f) drawPath(iso.floorCircle(fx, fy, z, 0.63f * sc), Pal.orange.copy(alpha = 0.10f * fan * glow))
     for (j in 0 until 5) {
         val a = Math.toRadians(angDeg + j * 72.0).toFloat()
         fun pt(r: Float, da: Float) = iso.p(fx + r * sc * cos(a + da), fy + r * sc * sin(a + da), z)
         val blade = Path().apply {
             val p0 = pt(0.072f, -0.15f); moveTo(p0.x, p0.y)
-            val p1 = pt(0.646f, 0.3f); val c1 = pt(0.425f, -0.2f); quadraticTo(c1.x, c1.y, p1.x, p1.y)
-            val p2 = pt(0.646f, 0.85f); lineTo(p2.x, p2.y)
-            val p3 = pt(0.085f, 0.5f); val c2 = pt(0.383f, 0.75f); quadraticTo(c2.x, c2.y, p3.x, p3.y)
+            val p1 = pt(0.645f, -0.18f); val c1 = pt(0.425f, -0.28f); quadraticTo(c1.x, c1.y, p1.x, p1.y)
+            val p2 = pt(0.645f, 0.66f); lineTo(p2.x, p2.y)
+            val p3 = pt(0.085f, 0.5f); val c2 = pt(0.383f, 1.0f); quadraticTo(c2.x, c2.y, p3.x, p3.y)
             close()
         }
-        drawPath(blade, bladeColor.copy(alpha = 0.55f))
-        drawPath(blade, lerp(Pal.mute, Pal.orangeDeep, fan), style = Stroke(lw))
+        drawPath(blade, Brush.linearGradient(listOf(lerp(Color(0xFF888C92), Color(0xFFFFB56B), fan), lerp(Color(0xFF62666C), Color(0xFFFF942F), fan)), iso.p(fx - sc, fy, z), iso.p(fx + sc, fy, z)))
+        drawPath(blade, lerp(Pal.line, Pal.orangeDeep, fan), style = Stroke(lw, join = StrokeJoin.Round))
     }
-    drawPath(iso.floorCircle(fx, fy, z, 0.425f * sc), Pal.line.copy(alpha = 0.6f), style = Stroke(lw))
+    drawPath(iso.floorCircle(fx, fy, z, 0.425f * sc), Pal.line.copy(alpha = 0.65f), style = Stroke(lw * 0.7f))
+    drawPath(iso.floorCircle(fx, fy, z, 0.65f * sc), Pal.line.copy(alpha = 0.7f), style = Stroke(lw * 0.65f))
     for (j in 0 until 4) {
         val a = (PI / 2 * j + PI / 4).toFloat()
         drawLine(
@@ -364,9 +399,10 @@ private fun DrawScope.bayTopParts(
     val dk = Color(0xFF3A3A40)
     val dk2 = Color(0xFF2A2A2F)
     val dk3 = Color(0xFF202024)
-    val or = Pal.orange
-    val orF = Color(0xFFF7C79A)
-    val orS = Color(0xFFE9A25A)
+    val powered = glow > 0.01f
+    val or = lerp(Color(0xFF7D8289), Pal.orange, glow)
+    val orF = lerp(g1, Color(0xFFF7C79A), glow)
+    val orS = lerp(g2, Color(0xFFE9A25A), glow)
     // parts stay at most ~0.2 tall and must clear the rack face behind them
     fun clear(v1: Float, h: Float) = yb - v1 >= RD + h * rise + 0.02f
     fun bx(x0: Float, x1: Float, v0: Float, v1: Float, h0: Float, h1: Float,
@@ -406,7 +442,7 @@ private fun DrawScope.bayTopParts(
             plate(0.7f, 3.8f)
             for (k in 0 until 5) disc(1.05f + k * 0.62f, 0.86f, 0.04f, 0.2f, 0.17f, or)
             label("OUT 12V", 0.85f, 0.3f, 0.045f, 0.13f, Pal.mute)
-            val lvl = (4 + (3.5f * (1f + sin(t * 1.7f))).toInt()).coerceAtMost(8)
+            val lvl = if (!powered) 0 else (4 + (3.5f * (1f + sin(t * 1.7f))).toInt()).coerceAtMost(8)
             for (j in 0 until 8) flat(1.75f + j * 0.25f, 1.75f + j * 0.25f + 0.17f, 0.22f, 0.4f, 0.045f, if (j < lvl) or else g2)
             plate(4.0f, 5.2f)
             if (clear(1.2f, 0.05f)) drawFan(iso, 4.6f, yb - 0.7f, z1 + 0.05f * rise, 0.56f, fanAng, fan, glow, lw)
@@ -414,7 +450,7 @@ private fun DrawScope.bayTopParts(
         1 -> {
             plate(0.7f, 5.3f)
             for (k in 0 until 5) {
-                val on = sin(t * 3f + k * 1.7f) > -0.3f
+                val on = powered && sin(t * 3f + k * 1.7f) > -0.3f
                 val x0 = 0.9f + k * 0.88f
                 bx(x0, x0 + 0.7f, 0.55f, 1.1f, 0.04f, 0.14f, if (on) or else w, if (on) orF else g1, if (on) orS else g2)
                 label("P${k + 1}", x0 + 0.23f, 0.83f, 0.14f, 0.16f, if (on) w else Pal.ink, true)
@@ -427,8 +463,8 @@ private fun DrawScope.bayTopParts(
                 val x0 = 0.9f + k * 0.78f
                 bx(x0, x0 + 0.6f, 0.55f, 1.1f, 0.04f, 0.14f)
                 flat(x0 + 0.1f, x0 + 0.5f, 0.68f, 0.97f, 0.14f, dk, Pal.line)
-                dot(x0 + 0.17f, 0.32f, 0.045f, 2f, if (sin(t * 4f + k * 1.3f) > 0f) or else g2)
-                dot(x0 + 0.43f, 0.32f, 0.045f, 2f, if (sin(t * 7f + k * 2.1f) > 0.4f) or else g2)
+                dot(x0 + 0.17f, 0.32f, 0.045f, 2f, if (powered && sin(t * 4f + k * 1.3f) > 0f) or else g2)
+                dot(x0 + 0.43f, 0.32f, 0.045f, 2f, if (powered && sin(t * 7f + k * 2.1f) > 0.4f) or else g2)
             }
             bx(4.2f, 5.1f, 0.55f, 1.1f, 0.04f, 0.12f, or, orF, orS)
             label("LAN", 4.5f, 0.83f, 0.12f, 0.16f, w, true)
@@ -438,12 +474,12 @@ private fun DrawScope.bayTopParts(
             plate(0.7f, 5.3f)
             for (k in 0 until 8) {
                 val x0 = 0.95f + k * 0.38f
-                bx(x0, x0 + 0.26f, 0.55f, 1.1f, 0.04f, 0.06f + 0.14f * abs(sin(t * 1.5f + k * 0.8f)), or, orF, orS)
+                bx(x0, x0 + 0.26f, 0.55f, 1.1f, 0.04f, 0.06f + (if (powered) 0.14f else 0f) * abs(sin(t * 1.5f + k * 0.8f)), or, orF, orS)
             }
             for (q in 0..15) seg(0.95f + q * 0.19f, 0.27f, 0.95f + q * 0.19f, if (q % 4 == 0) 0.42f else 0.35f, 0.045f, Pal.mute, 1f)
             bx(4.2f, 5.3f, 0.2f, 1.1f, 0.04f, 0.1f, dk, dk2, dk3)
             label("TOK", 4.45f, 0.84f, 0.1f, 0.22f, or, true)
-            for (k in 0 until 3) dot(4.45f + k * 0.25f, 0.4f, 0.1f, 1.8f, if ((t * 3f).toInt() % 3 == k) or else Pal.mute)
+            for (k in 0 until 3) dot(4.45f + k * 0.25f, 0.4f, 0.1f, 1.8f, if (powered && (t * 3f).toInt() % 3 == k) or else Pal.mute)
         }
         4 -> {
             val cx = 1.7f; val cv = 0.67f
@@ -457,21 +493,21 @@ private fun DrawScope.bayTopParts(
                     drawLine(Pal.mute, iso.p(cx + 0.36f * cos(a), yb - cv + 0.36f * sin(a), zd),
                         iso.p(cx + 0.44f * cos(a), yb - cv + 0.44f * sin(a), zd), strokeWidth = lw)
                 }
-                val na = Math.toRadians(205.0 + 100.0 * sin(2.6 + 1.7 * sin(t * 1.1))).toFloat()
-                drawLine(Pal.orangeDeep, iso.p(cx, yb - cv, zd), iso.p(cx + 0.34f * cos(na), yb - cv + 0.34f * sin(na), zd), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+                val na = Math.toRadians(if (powered) 205.0 + 100.0 * sin(2.6 + 1.7 * sin(t * 1.1)) else 150.0).toFloat()
+                drawLine(or, iso.p(cx, yb - cv, zd), iso.p(cx + 0.34f * cos(na), yb - cv + 0.34f * sin(na), zd), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
                 drawCircle(Pal.ink, 2.dp.toPx(), iso.p(cx, yb - cv, zd))
             }
             plate(2.7f, 5.3f)
-            val lvl = 1 + ((t * 2f).toInt() % 4)
+            val lvl = if (powered) 1 + ((t * 2f).toInt() % 4) else 0
             for (k in 0 until 4) {
                 val x0 = 3.0f + k * 0.5f
                 bx(x0, x0 + 0.36f, 0.55f, 1.1f, 0.04f, 0.1f + 0.033f * k, if (k < lvl) or else g2, w, g2)
             }
-            for (k in 0 until 3) dot(3.15f + k * 0.35f, 0.32f, 0.045f, 1.8f, if ((t * 3f).toInt() % 3 == k) or else g2)
+            for (k in 0 until 3) dot(3.15f + k * 0.35f, 0.32f, 0.045f, 1.8f, if (powered && (t * 3f).toInt() % 3 == k) or else g2)
         }
         5 -> {
             plate(0.7f, 2.9f)
-            val su = (t * 0.45f) % 1f
+            val su = if (powered) (t * 0.45f) % 1f else 0f
             val s0 = 0.4f + 0.2f * su
             bx(0.95f, 2.65f, s0, s0 + 0.5f, 0.04f, 0.08f)
             for (k in 0 until 3) seg(1.15f, s0 + 0.14f + k * 0.12f, 2.45f, s0 + 0.14f + k * 0.12f, 0.08f, Pal.lineSoft, 1f)
@@ -498,11 +534,11 @@ private fun DrawScope.bayTopParts(
                 for (k in 1..24) {
                     val nx = 0.95f + k * 0.1f
                     val d = abs(nx - (0.95f + ph * 2.4f))
-                    val nv = 0.8f + (if (d < 0.3f) 0.2f * sin(d * 20f) * (1f - d / 0.3f) * (if (k % 2 == 0) 1f else -1f) else 0f)
+                    val nv = 0.8f + (if (powered && d < 0.3f) 0.2f * sin(d * 20f) * (1f - d / 0.3f) * (if (k % 2 == 0) 1f else -1f) else 0f)
                     seg(px, pv, nx, nv, 0.075f, or, 1.4f); px = nx; pv = nv
                 }
             }
-            for (k in 0 until 4) dot(0.95f + k * 0.3f, 0.3f, 0.045f, 2.2f, if ((t * 2f).toInt() % 4 == k) or else g2)
+            for (k in 0 until 4) dot(0.95f + k * 0.3f, 0.3f, 0.045f, 2.2f, if (powered && (t * 2f).toInt() % 4 == k) or else g2)
             label("KEEP ALIVE", 2.4f, 0.3f, 0.045f, 0.13f, Pal.mute)
             plate(3.7f, 5.3f)
             disc(4.5f, 0.67f, 0.04f, 0.14f, 0.36f, w, g1)
@@ -541,12 +577,17 @@ private fun DrawScope.drawMac(iso: Iso, m: Float, on: Boolean, bt: Float, t: Flo
     drawPath(bez, Color(0xFFDCDCE1)); drawPath(bez, Pal.lineSoft, style = Stroke(lw))
 
     val sy0 = MY0 + 0.22f; val sy1 = MY1 - 0.22f; val sz0 = MZ0 + 0.42f; val sz1 = MZ1 - 0.2f
-    val pOn = if (on) ((bt - 0.15f) / 0.45f).coerceIn(0f, 1f) else 0f
-    val scr = quad(iso.p(xf, sy0, sz1), iso.p(xf, sy1, sz1), iso.p(xf, sy1, sz0), iso.p(xf, sy0, sz0))
-    drawPath(scr, lerp(Color(0xFF2E2E34), Color(0xFFFFE8D6), pOn))
-    drawPath(scr, Pal.line, style = Stroke(lw))
+        val shell = quad(iso.p(xf, MY0 + 0.1f, MZ0 + 0.3f), iso.p(xf, MY1 - 0.1f, MZ0 + 0.3f), iso.p(xf, MY1 - 0.1f, MZ1 - 0.1f), iso.p(xf, MY0 + 0.1f, MZ1 - 0.1f))
+        drawPath(shell, Color(0xFFE8E9EC)); drawPath(shell, Pal.line, style = Stroke(lw))
+        val bezel = quad(iso.p(xf, sy0 - 0.12f, sz1 + 0.12f), iso.p(xf, sy1 + 0.12f, sz1 + 0.12f), iso.p(xf, sy1 + 0.12f, sz0 - 0.12f), iso.p(xf, sy0 - 0.12f, sz0 - 0.12f))
+        drawPath(bezel, Color.White); drawPath(bezel, Pal.lineSoft, style = Stroke(lw))
+        val scr = quad(iso.p(xf, sy0, sz1), iso.p(xf, sy1, sz1), iso.p(xf, sy1, sz0), iso.p(xf, sy0, sz0))
+        drawPath(scr, if (on) Color(0xFFFFEADC) else Color(0xFF15171B))
+        val screenGlow = if (on) 0.76f + 0.12f * sin(t * 2.4f) else 0f
+        drawPath(scr, Pal.orange.copy(alpha = 0.26f * screenGlow), style = Stroke(2.dp.toPx()))
 
-    val cols = 16; val rows = 11
+        val cols = 16; val rows = 11
+
     val cw = (sy1 - sy0) / cols; val ch = (sz1 - sz0) / rows
     val strong = Path(); val dim = Path()
     fun dot(path: Path, c: Int, r: Int) {
@@ -560,39 +601,34 @@ private fun DrawScope.drawMac(iso: Iso, m: Float, on: Boolean, bt: Float, t: Flo
         val g = GLYPHS[chr] ?: return
         for (r in g.indices) for (c in g[r].indices) if (g[r][c] == '1') dot(strong, c0 + c, r0 + r)
     }
-    if (pOn > 0.99f) {
-        if (bt < 2.6f) {
-            if (bt > 0.7f && !(bt in 0.9f..1.0f)) { glyph('A', 3, 1); glyph('I', 9, 1) }
-            val prog = ((bt - 0.7f) / 1.7f).coerceIn(0f, 1f)
+    if (on) {
+        val tc = bt.coerceAtLeast(0f)
+        if (tc < 2.6f) {
+            if (tc > 0.7f && !(tc in 0.9f..1.0f)) { glyph('A', 3, 1); glyph('I', 9, 1) }
+            val prog = ((tc - 0.7f) / 1.7f).coerceIn(0f, 1f)
             val n = (prog * 10).toInt()
             for (c in 0 until 10) dot(if (c < n) strong else dim, 3 + c, 9)
         } else {
-            val tc = bt - 2.6f
             val period = 1.7f
             val n = (tc / period).toInt()
             val f = (tc - n * period) / period
-            for (s in 0..3) {
-                val mi = n - 3 + s
+            for (slot in 0..3) {
+                val mi = n - 3 + slot
                 if (mi < 0) continue
-                val row = 1 + 2 * s
+                val row = 1 + 2 * slot
                 val ai = mi % 2 == 1
                 val len = 5 + (mi * 5 + 3) % 8
                 val shown = if (mi == n) ((f / 0.7f).coerceIn(0f, 1f) * len).toInt() else len
                 for (k in 0 until shown) {
-                    if (k % 5 == 4) continue
-                    dot(if (ai) strong else dim, if (ai) 14 - k else 1 + k, row)
+                    if (k % 5 != 4) dot(if (ai) strong else dim, if (ai) 14 - k else 1 + k, row)
                 }
-            }
-            if (f > 0.7f) {
-                val nextAi = (n + 1) % 2 == 1
-                for (k in 0..2) if (((t * 6f).toInt() + k) % 3 == 0) dot(dim, if (nextAi) 14 - k else 1 + k, 9)
             }
         }
         drawPath(dim, Pal.orange.copy(alpha = 0.45f))
         drawPath(strong, Pal.orangeDeep)
-        drawPath(strong, Pal.orange.copy(alpha = 0.25f), style = Stroke(2.dp.toPx()))
     }
     drawLine(Color(0xFF3A3A40), iso.p(xf, MY0 + 0.7f, MZ0 + 0.17f), iso.p(xf, MY1 - 0.7f, MZ0 + 0.17f), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+
     val ledOn = on && sin(t * 3f) > -0.2f
     drawCircle(if (ledOn) Pal.orange else Color(0xFFC8C8CE), 2.dp.toPx(), iso.p(xf, MY0 + 0.3f, MZ0 + 0.17f))
 }
@@ -742,7 +778,7 @@ private fun DrawScope.driveTopDeco(m: TextMeasurer, iso: Iso, k: Int, top: Float
         drawLine(Pal.lineSoft, iso.p(x0 + 0.1f, y, top), iso.p(x1 - 0.1f, y, top), strokeWidth = lw)
     }
     val latch = quad(iso.p(x0 + 0.08f, 1.72f, top), iso.p(x1 - 0.08f, 1.72f, top), iso.p(x1 - 0.08f, 1.88f, top), iso.p(x0 + 0.08f, 1.88f, top))
-    drawPath(latch, Pal.orange.copy(alpha = 0.9f)); drawPath(latch, Pal.orangeDeep, style = Stroke(lw))
+    drawPath(latch, if (on) Pal.orange.copy(alpha = 0.9f) else Color(0xFF92969D)); drawPath(latch, if (on) Pal.orangeDeep else Pal.line, style = Stroke(lw))
 }
 
 /** Drive bodies below the rim, drawn inside the clipped cavity. */
@@ -771,7 +807,7 @@ private fun DrawScope.drawDrivesAbove(m: TextMeasurer, iso: Iso, e: FloatArray, 
                 val zc = (RH + top) / 2f
                 val sh = min(0.58f, visH * 0.76f)
                 val sw = 0.68f
-                val b = 0.5f + 0.5f * sin(t * 3.1f + k * 1.3f)
+                val b = if (running) 0.5f + 0.5f * sin(t * 3.1f + k * 1.3f) else 0f
                 fun scrQuad(yHalf: Float, zHalf: Float, r: Float) = roundedQuadPath(
                     listOf(
                         iso.p(x1, yc + yHalf, zc + zHalf),
@@ -784,7 +820,8 @@ private fun DrawScope.drawDrivesAbove(m: TextMeasurer, iso: Iso, e: FloatArray, 
                 drawPath(bez, Color(0xFF141418))
                 drawPath(bez, Pal.line, style = Stroke(lw))
                 val scr = scrQuad(sw / 2f, sh / 2f, 0.14f)
-                drawPath(scr, lerp(Color(0xFF1B1D24), Color(0xFF2C2833), b))
+                drawPath(scr, if (running) lerp(Color(0xFF1B1D24), Color(0xFF2C2833), b) else Color(0xFF14161B))
+                if (!running) return@clipPath
                 if (k == DRV_N - 1) {
                     val cell = min(sw * 0.66f / 7f, sh * 0.66f / 6f)
                     val hp = iso.pixelMatrix(x1, HEART, yc, zc, cell)
@@ -816,7 +853,7 @@ private fun DrawScope.drawCavity(m: TextMeasurer, iso: Iso, e: FloatArray, runni
         }
         val bp = quad(iso.p(0.5f, c, RH - 0.72f), iso.p(b - 0.2f, c, RH - 0.72f), iso.p(b - 0.2f, c, RH - 0.1f), iso.p(0.5f, c, RH - 0.1f))
         drawPath(bp, Color(0xFF2B2B31)); drawPath(bp, rib, style = Stroke(lw))
-        planeText(m, iso, "DISK ARRAY", 0.7f, RH - 0.3f, 0.19f * iso.s, Pal.orange.copy(alpha = 0.9f), true, c)
+        planeText(m, iso, "DISK ARRAY", 0.7f, RH - 0.3f, 0.19f * iso.s, if (running) Pal.orange.copy(alpha = 0.9f) else Pal.mute, true, c)
         planeText(m, iso, "7 BAY  HOT SWAP", 0.7f, RH - 0.54f, 0.13f * iso.s, Pal.mute, false, c)
         for (k in 0 until DRV_N) {
             val on = running && e[k] < 0.3f && sin(t * (2.5f + k * 0.7f) + k) > -0.2f
@@ -845,9 +882,9 @@ fun RackScene(
     val measurer = rememberTextMeasurer()
     val onSelectNow by rememberUpdatedState(onSelect)
     val onPowerNow by rememberUpdatedState(onPower)
-    val spinSpeed = animateFloatAsState(if (running) 1f else 0f, tween(1400), label = "spin")
+    var fanSpeed by remember { mutableFloatStateOf(0f) }
     val glowOn = animateFloatAsState(if (running) 1f else 0f, tween(900), label = "glow")
-    val litA = List(BAY_COUNT) { animateFloatAsState(if (lit[it]) 1f else 0f, tween(600), label = "lit$it") }
+    val litA = List(BAY_COUNT) { animateFloatAsState(if (running && lit[it]) 1f else 0f, tween(600), label = "lit$it") }
     val busyNow by rememberUpdatedState(busy)
     val runningNow by rememberUpdatedState(running)
     val popTarget = remember { mutableStateListOf(*Array(BAY_COUNT) { false }) }
@@ -865,13 +902,19 @@ fun RackScene(
     LaunchedEffect(lidOut) { if (!lidOut) for (k in 0 until DRV_N) driveTarget[k] = false }
     var macOut by remember { mutableStateOf(false) }
     val macA = animateFloatAsState(if (macOut) 1f else 0f, spring(0.62f, Spring.StiffnessMediumLow), label = "mac")
-    val macOutNow by rememberUpdatedState(macOut)
     val fanAng = remember { mutableStateListOf(0f, 20f, 40f, 0f) }
     val fanHeld = remember { BooleanArray(FAN_N) }
     val fanKick = remember { FloatArray(FAN_N) }
     var bootT by remember { mutableFloatStateOf(0f) }
+    var aiRunT by remember { mutableFloatStateOf(0f) }
+    var aiOffT by remember { mutableFloatStateOf(RackPowerVisuals.SHUTDOWN_SECONDS) }
     val bump = remember { Animatable(0f) }
+    var previousSelected by remember { mutableIntStateOf(selected) }
     LaunchedEffect(selected) {
+        if (previousSelected != selected) {
+            for (i in 0 until BAY_COUNT) popTarget[i] = i == selected
+            previousSelected = selected
+        }
         bump.snapTo(1f)
         bump.animateTo(0f, tween(650))
     }
@@ -880,17 +923,37 @@ fun RackScene(
     var flow by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(Unit) {
         var last = 0L
+        var wasPowered = false
         while (true) {
             withFrameNanos { n ->
                 if (last != 0L) {
                     val dt = ((n - last) / 1e9f).coerceAtMost(0.05f)
-                    t += dt
-                    for (k in 0 until FAN_N) if (!fanHeld[k]) {
-                        fanAng[k] = (fanAng[k] + dt * (600f * spinSpeed.value * (1f - liftA.value) + fanKick[k])) % 360f
-                        fanKick[k] *= exp(-2.5f * dt)
+                    val online = runningNow
+                    val fansMayRun = online && liftA.value < 0.5f
+                    if (online) t += dt
+                    fanSpeed = RackPowerVisuals.advanceFanSpeed(fanSpeed, fansMayRun, dt)
+                    for (k in 0 until FAN_N) {
+                        if (!fansMayRun) fanKick[k] = 0f
+                        if (!fanHeld[k]) {
+                            fanAng[k] = (fanAng[k] + dt * (600f * fanSpeed * (1f - liftA.value) + fanKick[k])) % 360f
+                            fanKick[k] *= exp(-2.5f * dt)
+                        }
                     }
-                    bootT = if (runningNow || macOutNow) bootT + dt else 0f
-                    flow += dt * (0.22f + 0.55f * glowOn.value)
+                    if (online) {
+                        if (!wasPowered) {
+                            bootT = 0f
+                            aiRunT = 0f
+                        }
+                        bootT += dt
+                        aiRunT += dt
+                        aiOffT = 0f
+                        flow += dt * (0.22f + 0.55f * glowOn.value)
+                    } else {
+                        bootT = 0f
+                        aiOffT = (aiOffT + dt).coerceAtMost(RackPowerVisuals.SHUTDOWN_SECONDS)
+                        if (aiOffT >= RackPowerVisuals.SHUTDOWN_SECONDS) aiRunT = 0f
+                    }
+                    wasPowered = online
                 }
                 last = n
             }
@@ -901,7 +964,7 @@ fun RackScene(
         modifier.pointerInput(Unit) {
             detectTapGestures { oBase ->
                 val iso = isoFor(size.width.toFloat(), size.height.toFloat(), 1.5f * liftA.value + 1.9f * lidA.value)
-                val o = Offset(oBase.x, oBase.y + LIFT_H * liftA.value.coerceIn(0f, 1f) * iso.s)
+                val o = Offset(oBase.x, oBase.y + LIFT_H * liftA.value.coerceIn(0f, 1f) * Z_SCALE * iso.s)
                 val md = macA.value.coerceIn(0f, 1.15f) * MAC_D
                 val (my, mz) = iso.unprojX(o, RW + md)
                 if (my in MY0..MY1 && mz in MZ0..MZ1) { macOut = !macOut; return@detectTapGestures }
@@ -919,9 +982,11 @@ fun RackScene(
                         hit = tx in BX0..BX1 && ty in RD..(RD + d)
                     }
                     if (hit) {
-                        val open = !popTarget[i]
-                        for (j in 0 until BAY_COUNT) popTarget[j] = false
-                        popTarget[i] = open
+                        if (i == previousSelected) {
+                            val open = !popTarget[i]
+                            for (j in 0 until BAY_COUNT) popTarget[j] = false
+                            popTarget[i] = open
+                        }
                         onSelectNow(i)
                         return@detectTapGestures
                     }
@@ -952,8 +1017,9 @@ fun RackScene(
         }.pointerInput(Unit) {
             awaitEachGesture {
                 val down = awaitFirstDown(requireUnconsumed = false)
+                if (!runningNow || liftA.value > 0.5f) return@awaitEachGesture
                 val iso = isoFor(size.width.toFloat(), size.height.toFloat(), 1.5f * liftA.value + 1.9f * lidA.value)
-                val shiftY = LIFT_H * liftA.value.coerceIn(0f, 1f) * iso.s
+                val shiftY = LIFT_H * liftA.value.coerceIn(0f, 1f) * Z_SCALE * iso.s
                 fun sh(o: Offset) = Offset(o.x, o.y + shiftY)
                 val pop0 = popA[0].value.coerceAtLeast(0f)
                 var hit = -1
@@ -998,19 +1064,24 @@ fun RackScene(
     ) {
         val iso = isoFor(size.width, size.height, 1.5f * liftA.value + 1.9f * lidA.value)
         val s = iso.s
-        val lw = 1.dp.toPx()
+        val lw = 0.7.dp.toPx()
         val dead = 1f - liftA.value.coerceIn(0f, 1f)
         val glow = glowOn.value * dead
         val live = running && dead > 0.5f
         val breath = 0.75f + 0.25f * sin(t * 2.2f)
         // 脉冲光条：2s 周期正弦呼吸，alpha 0.35~1.0，phase 错开形成扫动
         fun pulse(phase: Float = 0f) = 0.675f + 0.325f * sin(t * 3.1416f + phase)
-        val fan = spinSpeed.value * dead
-        val liftPx = LIFT_H * liftA.value.coerceIn(0f, 1f) * s
+        val fan = fanSpeed * glow
+        val liftPx = LIFT_H * liftA.value.coerceIn(0f, 1f) * Z_SCALE * s
 
         fun face(path: Path, fill: Color) {
             drawPath(path, fill)
             drawPath(path, Pal.line, style = Stroke(lw, join = StrokeJoin.Round))
+        }
+
+        val shadowCenter = iso.p(RW * 0.5f, RD * 0.5f, 0f)
+        withTransform({ scale(1f, 0.4f, pivot = shadowCenter) }) {
+            drawCircle(Brush.radialGradient(listOf(Color(0xFFC5B6A9).copy(alpha = 0.16f), Color.Transparent), shadowCenter, 4.9f * s), 4.9f * s, shadowCenter)
         }
 
         // floor light
@@ -1031,14 +1102,15 @@ fun RackScene(
         face(quad(iso.p(bx0, by1, 0f), iso.p(bx1, by1, 0f), iso.p(bx1, by1, bz), iso.p(bx0, by1, bz)), Pal.front)
         face(quad(iso.p(bx1, by0, 0f), iso.p(bx1, by1, 0f), iso.p(bx1, by1, bz), iso.p(bx1, by0, bz)), Pal.side)
         face(quad(iso.p(bx0, by0, bz), iso.p(bx1, by0, bz), iso.p(bx1, by1, bz), iso.p(bx0, by1, bz)), Pal.top)
-        drawLine(
-            Pal.lineSoft, iso.p(0.4f, RD + 0.45f, bz), iso.p(RW - 0.4f, RD + 0.45f, bz),
-            strokeWidth = 5.dp.toPx(), cap = StrokeCap.Round
-        )
-        drawLine(
-            Pal.orange.copy(alpha = 0.7f * glow * pulse()), iso.p(0.4f, RD + 0.45f, bz), iso.p(RW - 0.4f, RD + 0.45f, bz),
-            strokeWidth = 1.5.dp.toPx(), cap = StrokeCap.Round
-        )
+        fun baseRail(x0: Float, y0: Float, x1: Float, y1: Float) {
+            val start = iso.p(x0, y0, bz + 0.008f)
+            val end = iso.p(x1, y1, bz + 0.008f)
+            drawLine(Color.White, start + Offset(0f, -lw), end + Offset(0f, -lw), s * 0.09f, cap = StrokeCap.Round)
+            drawLine(Color(0xFFC3C6CC), start, end, s * 0.075f, cap = StrokeCap.Round)
+            drawLine(lerp(Color(0xFFDDE0E4), Pal.orange, glow), start, end, s * 0.027f, cap = StrokeCap.Round)
+        }
+        baseRail(0.35f, RD + 0.47f, RW - 0.35f, RD + 0.47f)
+        baseRail(RW + 0.46f, 0.25f, RW + 0.46f, RD - 0.25f)
         for ((sx, sy) in listOf(bx0 + 0.3f to by0 + 0.3f, bx1 - 0.3f to by0 + 0.3f, bx1 - 0.3f to by1 - 0.3f, bx0 + 0.3f to by1 - 0.3f)) {
             val c = iso.floorCircle(sx, sy, bz, 0.1f, 12)
             drawPath(c, Pal.lineSoft)
@@ -1049,7 +1121,7 @@ fun RackScene(
         run {
             val n = 90
             val pts = List(n + 1) { k ->
-                val u = k / n.toFloat()
+                val u = RackLayout.CABLE_START + (1f - RackLayout.CABLE_START) * k / n.toFloat()
                 val y = -9f * u
                 val x = 3.2f + 1.1f * sin(u * 9f + 0.5f) + 0.6f * sin(u * 17f)
                 val dz = ((-y - 0.8f) / 0.4f).coerceIn(0f, 1f)
@@ -1063,7 +1135,7 @@ fun RackScene(
             drawPath(shadow, Color.Black.copy(alpha = 0.10f), style = Stroke(10.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
             drawPath(cable, Pal.line, style = Stroke(10.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
             drawPath(cable, Color(0xFFE4E4E9), style = Stroke(7.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawPath(cable, Pal.orange.copy(alpha = 0.25f + 0.75f * glow), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+            drawPath(cable, lerp(Pal.lineSoft, Pal.orange, glow), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
             // 数据脉冲：4 个短光段（约路径 5%）沿电缆快速循环流动，~1 秒一圈
             if (glow > 0.02f) {
                 val pm2 = PathMeasure()
@@ -1101,49 +1173,153 @@ fun RackScene(
         withTransform({ translate(0f, -liftPx) }) {
         // rack body
         val frontPath = iso.frontQuad(0f, RZ0, RW, RH)
-        face(frontPath, Pal.front)
+        drawPath(frontPath, Brush.linearGradient(listOf(Color(0xFFFFFFFF), Color(0xFFF5F4F3)), iso.f(0f, RH), iso.f(RW, RZ0)))
+        drawPath(frontPath, Color(0xFF989BA2), style = Stroke(lw))
         face(quad(iso.p(RW, 0f, RZ0), iso.p(RW, RD, RZ0), iso.p(RW, RD, RH), iso.p(RW, 0f, RH)), Pal.side)
         face(quad(iso.p(0f, 0f, RH), iso.p(RW, 0f, RH), iso.p(RW, RD, RH), iso.p(0f, RD, RH)), Pal.top)
-
-        // rails
-        var z = RZ0 + 0.15f
-        while (z < RH - 0.1f) {
-            drawCircle(Pal.line, 0.9.dp.toPx(), iso.f(0.2f, z))
-            drawCircle(Pal.line, 0.9.dp.toPx(), iso.f(RW - 0.2f, z))
-            z += 0.14f
+        val frontTrim = roundedQuadPath(listOf(iso.f(0f, RZ0), iso.f(RW, RZ0), iso.f(RW, RH), iso.f(0f, RH)), 0.015f)
+        drawPath(frontTrim, Color(0xFF92969E), style = Stroke(lw * 0.85f))
+        drawLine(Color.White, iso.f(RW - 0.07f, RZ0 + 0.13f), iso.f(RW - 0.07f, RH - 0.1f), lw * 2.0f)
+        drawLine(Color.White, iso.f(0.11f, RZ0 + 0.15f), iso.f(0.11f, RH - 0.14f), 2.dp.toPx())
+        drawLine(Pal.lineSoft, iso.f(0.29f, RZ0 + 0.18f), iso.f(0.29f, RH - 0.16f), lw)
+        drawLine(Pal.lineSoft, iso.f(RW - 0.14f, RZ0 + 0.16f), iso.f(RW - 0.14f, RH - 0.14f), lw)
+        for (k in 0 until 23) {
+            val z = RZ0 + 0.28f + k * 0.275f
+            val warm = k % 4 == 0
+            drawCircle(if (warm && live) Pal.orange.copy(alpha = 0.8f) else Pal.line, (if (warm) 1.25f else 0.9f).dp.toPx(), iso.f(0.2f, z))
+        }
+        for (z in listOf(RZ0 + 0.14f, RH - 0.12f)) {
+            drawCircle(Color.White, 3.1.dp.toPx(), iso.f(0.32f, z))
+            drawCircle(Pal.line, 1.5.dp.toPx(), iso.f(0.32f, z))
         }
 
-        // side pixel displays
-        run {
-            val items = listOf(
-                Triple("TOK/S", if (tokPerSec >= 0) "%.1f".format(tokPerSec) else "--", 2.2f),
-                Triple("TTFT MS", if (ttftMs >= 0) "$ttftMs" else "--", 3.55f),
-                Triple("TOTAL TOK", fmtTokens(totalTokens), 5.1f)
-            )
-            val py0 = 0.4f; val py1 = RD - 0.4f
-            for ((label, value, zT) in items) {
-                val zB = zT - 1.2f
-                val panel = quad(iso.p(RW, py0, zT), iso.p(RW, py1, zT), iso.p(RW, py1, zB), iso.p(RW, py0, zB))
-                drawPath(panel, Color(0xFF2A2A2F))
-                drawPath(panel, Pal.line, style = Stroke(lw))
-                drawPath(iso.pixelPath(label, py1 - 0.1f, zT - 0.14f, 0.03f), Pal.orange.copy(alpha = 0.55f))
-                val cell = min(0.06f, 1.6f / glyphCols(value))
-                val litV = if (live) pulse() else 0.55f
-                val digits = iso.pixelPath(value, py1 - 0.1f, zT - 0.5f, cell)
-                drawPath(digits, Pal.orange.copy(alpha = litV))
-                if (live) drawPath(digits, Pal.orange.copy(alpha = 0.25f * breath), style = Stroke(2.5.dp.toPx()))
-                val led = iso.p(RW, py0 + 0.14f, zT - 0.2f)
-                drawCircle(if (live && (busyNow || sin(t * 3f) > 0f)) Pal.orange else Color(0xFF55555B), 2.dp.toPx(), led)
-            }
+        drawLine(Pal.lineSoft, iso.f(RW - 0.49f, RZ0 + 0.12f), iso.f(RW - 0.49f, RH - 0.14f), lw)
+        drawLine(Color.White, iso.f(RW - 0.43f, RZ0 + 0.12f), iso.f(RW - 0.43f, RH - 0.14f), lw * 1.6f)
+        drawLine(lerp(Pal.lineSoft, Pal.orange, glow), iso.f(RW - 0.24f, RH - 0.6f), iso.f(RW - 0.24f, RH - 1.05f), lw * 1.8f, cap = StrokeCap.Round)
 
-            var y = py0 + 0.1f
-            while (y < py1 - 0.05f) {
-                drawLine(Pal.lineSoft, iso.p(RW, y, 0.45f), iso.p(RW, y, 0.8f), strokeWidth = lw)
-                y += 0.1f
+        val sideShell = quad(iso.p(RW, 0.08f, 0.34f), iso.p(RW, RD - 0.1f, 0.34f), iso.p(RW, RD - 0.1f, RH - 0.12f), iso.p(RW, 0.08f, RH - 0.12f))
+        drawPath(sideShell, Brush.linearGradient(listOf(Color(0xFFFCFCFD), Color(0xFFE8E9EC)), iso.p(RW, RD, RH), iso.p(RW, 0f, 0f)))
+        drawPath(sideShell, Pal.line, style = Stroke(lw * 0.8f))
+        drawLine(Color(0xFFB5B9C1), iso.p(RW, 0.075f, RZ0 + 0.12f), iso.p(RW, 0.075f, RH - 0.18f), lw * 1.2f)
+        drawLine(Color.White, iso.p(RW, 0.13f, RZ0 + 0.12f), iso.p(RW, 0.13f, RH - 0.18f), lw * 1.5f)
+        fun sideQuad(y0: Float, y1: Float, z0: Float, z1: Float, inset: Float = 0f): Path = roundedQuadPath(
+            listOf(iso.p(RW, y1, z1), iso.p(RW, y0, z1), iso.p(RW, y0, z0), iso.p(RW, y1, z0)), inset
+        )
+        val displayY0 = 1.02f
+        val displayY1 = 2.52f
+        val aiTop = 6.82f
+        val aiBottom = 5.5f
+        drawPath(sideQuad(displayY0 - 0.15f, displayY1 + 0.15f, aiBottom - 0.25f, aiTop + 0.12f, 0.035f), Color(0xFFFDFDFE))
+        drawPath(sideQuad(displayY0 - 0.15f, displayY1 + 0.15f, aiBottom - 0.25f, aiTop + 0.12f, 0.035f), Pal.line, style = Stroke(lw))
+        drawPath(sideQuad(displayY0 - 0.06f, displayY1 + 0.06f, aiBottom - 0.04f, aiTop + 0.06f), Color(0xFFD1D2D7))
+        val aiStopping = !live && aiRunT > 0f && aiOffT < RackPowerVisuals.SHUTDOWN_SECONDS
+        val shutdown = if (aiStopping) RackPowerVisuals.shutdownProgress(aiOffT) else 0f
+        val aiCenterZ = (aiTop + aiBottom) * 0.5f
+        val aiHalfHeight = (aiTop - aiBottom) * 0.5f * if (aiStopping) RackPowerVisuals.shutdownAperture(aiOffT) else 1f
+        val aiWindow = sideQuad(displayY0, displayY1, aiCenterZ - aiHalfHeight, aiCenterZ + aiHalfHeight)
+        drawPath(sideQuad(displayY0, displayY1, aiBottom, aiTop), Color(0xFF15171B))
+        if (live || aiStopping) drawPath(aiWindow, lerp(Color(0xFFFFE8D0), Color(0xFF15171B), shutdown))
+        clipPath(aiWindow) {
+            if (!live && !aiStopping) return@clipPath
+            if (aiRunT < 2.9f) {
+                val aiCell = min((displayY1 - displayY0 - 0.25f) / glyphCols("AI"), (aiTop - aiBottom - 0.35f) / 7f)
+                val reveal = RackPowerVisuals.bootProgress(aiRunT)
+                var pixelIndex = 0
+                val totalPixels = "AI".sumOf { ch -> GLYPHS.getValue(ch).sumOf { row -> row.count { it == '1' } } }
+                var y = displayY1 - 0.16f
+                for (ch in "AI") {
+                    val glyph = GLYPHS.getValue(ch)
+                    for (row in glyph.indices) for (column in glyph[row].indices) {
+                        if (glyph[row][column] != '1') continue
+                        if (pixelIndex++ >= (totalPixels * reveal).toInt()) continue
+                        val y0 = y - column * aiCell
+                        val z0 = aiTop - 0.2f - row * aiCell
+                        drawPath(sideQuad(y0 - aiCell * 0.88f, y0, z0 - aiCell * 0.88f, z0), Pal.orangeDeep)
+                    }
+                    y -= (glyph[0].length + 1) * aiCell
+                }
+            } else {
+                val columns = 18
+                val cell = (displayY1 - displayY0 - 0.2f) / columns
+                val rowHeight = (aiTop - aiBottom - 0.18f) / 12f
+                fun pixel(column: Int, row: Float, color: Color) {
+                    val y = displayY1 - 0.1f - column * cell
+                    val z = aiTop - 0.1f - row * rowHeight
+                    drawPath(sideQuad(y - cell * 0.75f, y, z - rowHeight * 0.7f, z), color)
+                }
+                val stepTime = 1.55f
+                val elapsed = aiRunT - 2.9f
+                val message = (elapsed / stepTime).toInt()
+                val progress = (elapsed % stepTime) / stepTime
+                val scroll = ((progress - 0.85f) / 0.15f).coerceIn(0f, 1f)
+                for (slot in 0..3) {
+                    val id = message - 3 + slot
+                    if (id < 0) continue
+                    val assistant = id % 2 == 1
+                    val length = 9 + (id * 3 % 7)
+                    val shown = if (id == message) (length * (progress / 0.72f).coerceIn(0f, 1f)).toInt() else length
+                    for (column in 0 until shown) {
+                        if (column % 5 != 4) {
+                            pixel(if (assistant) columns - 1 - column else column, 1f + slot * 2.2f - scroll * 2.2f, if (assistant) Pal.orangeDeep else Color(0xFFBC9A7E))
+                        }
+                    }
+                }
+                for (dot in 0..2) {
+                    pixel(7 + dot * 2, 10.5f, Pal.orangeDeep.copy(alpha = if ((elapsed * 5f).toInt() % 3 == dot) 1f else 0.25f))
+                }
             }
         }
-
-        drawMac(iso, macA.value, (running || macOutNow) && dead > 0.5f, bootT, t, lw)
+        if (aiStopping) {
+            drawLine(Pal.orange.copy(alpha = (1f - shutdown) * 0.9f),
+                iso.p(RW, displayY0 + 0.08f, aiCenterZ), iso.p(RW, displayY1 - 0.08f, aiCenterZ),
+                (0.012f + 0.025f * (1f - shutdown)) * s, cap = StrokeCap.Round)
+        }
+        drawLine(Pal.ink, iso.p(RW, displayY1 - 0.5f, aiBottom - 0.14f), iso.p(RW, displayY0 + 0.5f, aiBottom - 0.14f), 2.dp.toPx(), cap = StrokeCap.Round)
+        val sideItems = listOf(
+            Triple("TOTAL TOK.", fmtTokens(totalTokens), 5.08f),
+            Triple("TTFT MS", if (ttftMs >= 0) "$ttftMs" else "--", 3.58f),
+            Triple("TOK/S", if (tokPerSec >= 0) "%.1f".format(tokPerSec) else "--", 2.08f)
+        )
+        for (item in sideItems) {
+            val (label, value, top) = item
+            val bottom = top - 1.27f
+            drawPath(sideQuad(displayY0 - 0.06f, displayY1 + 0.06f, bottom - 0.05f, top + 0.05f), Color.White)
+            drawPath(sideQuad(displayY0 - 0.06f, displayY1 + 0.06f, bottom - 0.05f, top + 0.05f), Pal.line, style = Stroke(lw * 0.8f))
+            drawPath(sideQuad(displayY0, displayY1, bottom, top), Brush.linearGradient(listOf(Color(0xFF353535), Color(0xFF232426)), iso.p(RW, displayY1, top), iso.p(RW, displayY0, bottom)))
+            if (live) sideText(measurer, iso, label, displayY1 - 0.1f, top - 0.22f, 0.19f * s, Pal.orange)
+            val cell = min(0.088f, 1.24f / glyphCols(value))
+            val digits = iso.pixelPath(value, displayY1 - 0.12f, top - 0.5f, cell)
+            if (live) drawPath(digits, Pal.orange.copy(alpha = 0.86f + 0.1f * sin(t * 1.8f)))
+            drawCircle(Color(0xFF525456), 1.3.dp.toPx(), iso.p(RW, displayY0 + 0.1f, top - 0.12f))
+        }
+        fun ventBank(top: Float, count: Int) {
+            for (k in 0 until count) {
+                val z = top - k * 0.13f
+                drawLine(Color.White, iso.p(RW, 0.25f, z - 0.025f), iso.p(RW, 0.65f, z - 0.025f), lw * 2.6f, cap = StrokeCap.Round)
+                drawLine(Color(0xFFB3B5B9), iso.p(RW, 0.25f, z), iso.p(RW, 0.65f, z), lw * 2.1f, cap = StrokeCap.Round)
+            }
+        }
+        ventBank(6.6f, 11)
+        ventBank(2.9f, 10)
+        sideText(measurer, iso, "AI", 0.75f, 4.72f, 0.21f * s, Pal.mute)
+        sideText(measurer, iso, "COMPUTE", 0.75f, 4.4f, 0.14f * s, Pal.mute)
+        sideText(measurer, iso, "UNIT", 0.75f, 4.1f, 0.15f * s, Pal.mute)
+        sideText(measurer, iso, "R-04", 0.75f, 3.79f, 0.16f * s, Pal.mute)
+        for (k in 0 until 18) {
+            val y = 1.06f + k * 0.081f
+            drawLine(Pal.lineSoft, iso.p(RW, y, 0.44f), iso.p(RW, y, 0.7f), lw)
+        }
+        drawPath(sideQuad(0.22f, 0.67f, 0.46f, 1.13f, 0.06f), Color(0xFFF1F2F5))
+        drawPath(sideQuad(0.22f, 0.67f, 0.46f, 1.13f, 0.06f), Pal.line, style = Stroke(lw))
+        drawLine(Color.White, iso.p(RW, 0.66f, 0.48f), iso.p(RW, 0.66f, 1.09f), lw)
+        val serviceMark = Path().apply {
+            val a = iso.p(RW, 0.38f, 5.13f); val b = iso.p(RW, 0.57f, 5.13f); val c = iso.p(RW, 0.475f, 4.97f)
+            moveTo(a.x, a.y); lineTo(b.x, b.y); lineTo(c.x, c.y); close()
+        }
+        drawPath(serviceMark, Pal.line, style = Stroke(lw))
+        if (macA.value > 0.01f) {
+            drawMac(iso, macA.value, live, bootT, t, lw)
+        }
 
         // top deck: hinged lid carrying the fans, cavity + antennas underneath
         val la = lidA.value.coerceIn(0f, 1f)
@@ -1151,19 +1327,40 @@ fun RackScene(
         val lAng = la * LID_MAX
         val li = LidIso(iso, lAng, LID_Y)
         val driveE = FloatArray(DRV_N) { driveA[it].value.coerceIn(0f, 1.1f) }
-        if (la > 0.01f) drawCavity(measurer, iso, driveE, running, t, lw)
+        if (la > 0.01f) drawCavity(measurer, iso, driveE, live, t, lw)
         val under = lAng > 0.78f
         val lidQ = quad(li.p(0.3f, LID_Y, RH), li.p(RW - 0.3f, LID_Y, RH), li.p(RW - 0.3f, RD - LID_Y, RH), li.p(0.3f, RD - LID_Y, RH))
         drawPath(lidQ, if (under) Color(0xFFD9D9DF) else Color(0xFFEBEBEF))
         drawPath(lidQ, if (under) Pal.line else Pal.lineSoft, style = Stroke(if (under) 1.6.dp.toPx() else lw, join = StrokeJoin.Round))
-        if (under) for (ry in listOf(0.55f, 1.4f, 2.25f)) drawLine(Pal.line, li.p(0.5f, ry, RH), li.p(RW - 0.5f, ry, RH), strokeWidth = lw)
-        for ((k, fx) in listOf(1.15f, RW / 2f, RW - 1.15f).withIndex()) drawFan(li, fx, fy, RH, 1f, fanAng[k], fan, glow, lw)
-        if (la > 0.01f) drawDrivesAbove(measurer, iso, driveE, running, t, lw)
+        if (under) {
+            for (ry in listOf(0.3f, 1.4f, 2.5f)) {
+                drawLine(Pal.line, li.p(0.38f, ry, RH), li.p(RW - 0.38f, ry, RH), strokeWidth = lw)
+            }
+        } else {
+            for (k in 0..6) {
+                drawLine(Color(0xFFF5F6F8), li.p(0.35f, 0.35f + k * 0.32f, RH + 0.035f), li.p(RW - 0.35f, 0.35f + k * 0.32f, RH + 0.035f), 1.dp.toPx())
+            }
+            val topPanel = quad(
+                li.p(0.25f, 0.12f, RH + 0.012f), li.p(RW - 0.25f, 0.12f, RH + 0.012f),
+                li.p(RW - 0.25f, RD - 0.12f, RH + 0.012f), li.p(0.25f, RD - 0.12f, RH + 0.012f)
+            )
+            drawPath(topPanel, Color(0xFFF5F5F6))
+            drawPath(topPanel, Pal.lineSoft, style = Stroke(lw))
+            drawLine(lerp(Pal.lineSoft, Pal.orange, glow), li.p(0.55f, 0.3f, RH + 0.02f), li.p(3.78f, 0.3f, RH + 0.02f), 2.dp.toPx(), cap = StrokeCap.Round)
+            topText(measurer, li, "AI //", RackLayout.TOP_LABEL_X, RackLayout.TOP_LABEL_Y, RH + 0.028f, RackLayout.TOP_LABEL_SIZE * s, if (live) Pal.orangeDeep else Pal.mute, true)
+            for (k in 0 until RackLayout.TOP_DOT_COUNT) {
+                val x = RackLayout.TOP_DOT_X + k * RackLayout.TOP_DOT_PITCH
+                drawPath(li.floorCircle(x, RackLayout.TOP_DOT_Y, RH + 0.025f, 0.035f, 14),
+                    if (live) Pal.orange.copy(alpha = 0.6f + 0.35f * sin(t * 2f + k).coerceAtLeast(0f)) else Pal.lineSoft)
+            }
+        }
+        for ((k, fx) in listOf(1.15f, RW / 2f, RW - 1.15f).withIndex()) drawFan(li, fx, fy, RH + if (under) 0f else 0.025f, 1f, fanAng[k], fan, glow, lw)
+        if (la > 0.01f) drawDrivesAbove(measurer, iso, driveE, live, t, lw)
 
         // bay light spill on front face
         clipPath(frontPath) {
             for (i in 0 until BAY_COUNT) {
-                val a = litA[i].value * dead
+                val a = litA[i].value * glow
                 if (a > 0.01f) {
                     val c = iso.f((BX0 + BX1) / 2f, bayTop(i) - BAY_H / 2f)
                     drawCircle(
@@ -1177,33 +1374,36 @@ fun RackScene(
             val sc = iso.f((BX0 + BX1) / 2f, bayTop(selected) - BAY_H / 2f)
             drawCircle(
                 Brush.radialGradient(
-                    listOf(Pal.orange.copy(alpha = 0.18f + 0.10f * breath + 0.25f * bump.value), Color.Transparent),
+                    listOf(Pal.orange.copy(alpha = (0.18f + 0.10f * breath + 0.25f * bump.value) * glow), Color.Transparent),
                     center = sc, radius = 2.6f * s
                 ), radius = 2.6f * s, center = sc
             )
         }
 
         // header strip + big power button
-        val hz1 = RH - 0.15f; val hz0 = RH - 1.6f
+        val hz1 = RH - 0.02f; val hz0 = RH - 1.45f
         val hp = iso.frontQuad(BX0, hz0, BX1, hz1)
-        drawPath(hp, Pal.orange.copy(alpha = 0.10f + 0.08f * glow))
-        drawPath(hp, Pal.orange.copy(alpha = 0.8f), style = Stroke(1.3.dp.toPx()))
-        val up = lit.count { it }
-        planeText(measurer, iso, "UP $up/$BAY_COUNT", 2.05f, RH - 0.5f, 0.3f * s, Pal.orangeDeep, bold = true)
-        planeText(measurer, iso, "LOAD", 2.05f, RH - 1.1f, 0.2f * s, Pal.mute)
+        drawPath(hp, Brush.linearGradient(listOf(lerp(Color(0xFFE9EAEC), Color(0xFFFFE0C0), glow), lerp(Color(0xFFF6F6F6), Color(0xFFFFF7F0), glow)), iso.f(BX0, RH), iso.f(BX1, hz0)))
+        drawPath(hp, Pal.orange.copy(alpha = 0.82f), style = Stroke(1.25.dp.toPx()))
+        val up = if (live) lit.count { it } else 0
+        planeText(measurer, iso, "UP  $up/$BAY_COUNT", 2.0f, RH - 0.5f, 0.32f * s, lerp(Pal.mute, Pal.orangeDeep, glow))
+        planeText(measurer, iso, "LOAD", 2.0f, RH - 0.99f, 0.18f * s, Pal.mute)
+        drawLine(Pal.orange.copy(alpha = 0.28f), iso.f(1.92f, RH - 1.31f), iso.f(5.25f, RH - 1.31f), lw * 0.65f)
         val segs = 10
-        val fill = (up / BAY_COUNT.toFloat() * segs).roundToInt()
+        val fill = if (live) (up / BAY_COUNT.toFloat() * segs).roundToInt() else 0
         for (j in 0 until segs) {
-            val x0 = 2.75f + j * 0.27f
+            val x0 = 2.75f + j * 0.255f
             if (j < fill) {
-                val pw = 0.19f * (0.78f + 0.22f * pulse(j * 0.55f))
-                val seg = iso.frontQuad(x0, RH - 1.25f, x0 + pw, RH - 0.95f)
-                drawPath(seg, Pal.orange.copy(alpha = (0.55f + 0.4f * glow) * pulse(j * 0.55f)))
+                val pw = 0.18f * (0.82f + 0.18f * pulse(j * 0.55f))
+                val seg = iso.frontQuad(x0, RH - 1.12f, x0 + pw, RH - 0.92f)
+                drawPath(seg, Color(0xFFFF9442).copy(alpha = (0.68f + 0.28f * glow) * pulse(j * 0.55f)))
             } else {
-                val seg = iso.frontQuad(x0, RH - 1.25f, x0 + 0.19f, RH - 0.95f)
-                drawPath(seg, Pal.orange.copy(alpha = 0.18f))
+                val seg = iso.frontQuad(x0, RH - 1.12f, x0 + 0.18f, RH - 0.92f)
+                drawPath(seg, Color(0xFFE7D9CF))
             }
         }
+        drawLine(Pal.lineSoft, iso.f(0.48f, RH - 0.05f), iso.f(0.48f, RZ0 + 0.1f), lw)
+        drawLine(Pal.lineSoft, iso.f(RW - 0.48f, RH - 0.05f), iso.f(RW - 0.48f, RZ0 + 0.1f), lw)
         run {
             val pz = pwrZ()
             val pc = iso.f(PWR_X, pz)
@@ -1218,9 +1418,9 @@ fun RackScene(
             drawPath(iso.frontCircle(PWR_X, pz, PWR_R, 28), Color(0xFF3A3A40))
             val capR = PWR_R * 0.82f
             val cap = iso.frontCircle(PWR_X, pz, capR, 28)
-            drawPath(cap, lerp(Color(0xFFEDEDF0), Pal.orange, glow))
-            drawPath(cap, lerp(Pal.line, Pal.orangeDeep, glow), style = Stroke(1.5.dp.toPx()))
-            val ic = lerp(Pal.mute, Color.White, glow)
+            drawPath(cap, lerp(Color(0xFF66676C), Color(0xFFFF9B4A), glow))
+            drawPath(cap, lerp(Color(0xFF85868C), Color(0xFFFFC48D), glow), style = Stroke(1.5.dp.toPx()))
+            val ic = lerp(Color(0xFFB2B3B9), Color.White, glow)
             val arc = Path()
             for (k in 0..24) {
                 val ang = Math.toRadians(125.0 + k * (290.0 / 24)).toFloat()
@@ -1237,20 +1437,22 @@ fun RackScene(
             val d = popD[i]
             val z1 = bayTop(i); val z0 = z1 - BAY_H
             val zm = (z0 + z1) / 2f
-            val a = litA[i].value * dead
+            val a = litA[i].value * glow
             val sel = i == selected
             if (d > 0.004f) {
                 face(quad(iso.p(BX0, RD, z1), iso.p(BX1, RD, z1), iso.p(BX1, RD + d, z1), iso.p(BX0, RD + d, z1)), Color(0xFFF1F1F4))
                 face(quad(iso.p(BX1, RD, z0), iso.p(BX1, RD + d, z0), iso.p(BX1, RD + d, z1), iso.p(BX1, RD, z1)), Pal.side)
-                bayTopParts(measurer, iso, i, RD + d, z1, ((d / BAY_D - 0.55f) / 0.45f).coerceIn(0f, 1f), t, fanAng[3], fan, glow, lw)
+                bayTopParts(measurer, iso, i, RD + d, z1, ((d / BAY_D - 0.55f) / 0.45f).coerceIn(0f, 1f), t, fanAng[3], fan, if (live) glow else 0f, lw)
             }
             withTransform({ translate(-d * K * s, d * 0.5f * s) }) {
-                val rect = iso.frontQuad(BX0, z0, BX1, z1)
-                drawPath(rect, if (sel) Pal.orange.copy(alpha = 0.08f).compositeOver(Color.White) else Color.White)
+                val rect = roundedQuadPath(listOf(iso.f(BX0, z0), iso.f(BX1, z0), iso.f(BX1, z1), iso.f(BX0, z1)), 0.025f)
+                drawPath(rect, Brush.linearGradient(listOf(Color.White, Color(0xFFF4F4F3)), iso.f(BX0, z1), iso.f(BX1, z0)))
+                drawLine(Color(0xFFFFD9B9), iso.f(BX0 + 0.018f, z0 + 0.03f), iso.f(BX0 + 0.018f, z1 - 0.03f), lw * 1.2f)
+                drawLine(Color.White, iso.f(BX0 + 0.06f, z1 - 0.035f), iso.f(BX1 - 0.04f, z1 - 0.035f), lw)
                 drawPath(
                     rect,
-                    if (sel) Pal.orangeDeep else Pal.line,
-                    style = Stroke(if (sel) 1.8.dp.toPx() else lw, join = StrokeJoin.Round)
+                    if (sel) Color(0xFFDBB18B) else Color(0xFFB2B3B7),
+                    style = Stroke(lw * 0.95f, join = StrokeJoin.Round)
                 )
                 if (sel && bump.value > 0.01f) {
                     val e = 0.18f * (1f - bump.value)
@@ -1260,13 +1462,20 @@ fun RackScene(
                     )
                 }
 
-                val ledC = iso.f(0.78f, zm)
-                if (a > 0.01f) drawCircle(Pal.orange.copy(alpha = 0.3f * a), 6.dp.toPx(), ledC)
-                drawCircle(lerp(Color(0xFFD0D0D6), Pal.orange, a), 3.dp.toPx(), ledC)
-                drawCircle(lerp(Pal.line, Pal.orangeDeep, a), 3.dp.toPx(), ledC, style = Stroke(lw))
+                drawPath(iso.frontCircle(0.78f, zm, 0.145f), lerp(Color(0xFFE1E2E5), Color(0xFFFFD6AD), a))
+                drawPath(iso.frontCircle(0.78f, zm, 0.105f), lerp(Color(0xFFC8CBD0), Pal.orange, a))
+                drawPath(iso.frontCircle(0.78f, zm, 0.105f), lerp(Pal.line, Pal.orangeDeep, a), style = Stroke(lw * 0.7f))
+                if (a > 0.01f) drawPath(iso.frontCircle(0.78f, zm, 0.048f), Color(0xFFFFF5EA))
 
-                planeText(measurer, iso, "0${i + 1} ${BAY_CODES[i]}", 1.05f, zm, 0.26f * s, if (sel) Pal.orangeDeep else Pal.ink, bold = true)
-                planeText(measurer, iso, readouts[i], 3.05f, zm, 0.23f * s, if (lit[i]) Pal.orangeDeep else Pal.mute)
+                planeText(measurer, iso, "0${i + 1} ${BAY_CODES[i]}", 1.02f, zm, 0.25f * s, if (sel) Pal.orangeDeep else Pal.ink)
+                clipPath(iso.frontQuad(2.96f, z0 + 0.04f, 4.22f, z1 - 0.04f)) {
+                    val labelStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = (0.22f * s).toSp())
+                    var value = readouts[i]
+                    while (value.isNotEmpty() && measurer.measure(value, labelStyle, softWrap = false).size.width > 1.1f * s) {
+                        value = value.dropLast(1)
+                    }
+                    planeText(measurer, iso, value, 3.02f, zm, 0.22f * s, if (live && lit[i]) Pal.orangeDeep else Pal.mute)
+                }
 
                 if (i == 3) {
                     for (j in 0 until 8) {
@@ -1293,53 +1502,39 @@ fun RackScene(
         for (i in 0 until BAY_COUNT) if (popD[i] <= 0.004f) drawBay(i)
         for (i in BAY_COUNT - 1 downTo 0) if (popD[i] > 0.004f) drawBay(i)
 
-        // cables: lower jack of a lit bay -> upper jack of the next lit bay
+        val cableLineWidth = 1.dp.toPx()
         val sway = sin(t * 1.3f) * 0.05f * (0.4f + glow)
         val pm = PathMeasure()
-        val outOn = FloatArray(BAY_COUNT)
-        val inOn = FloatArray(BAY_COUNT)
-        for (i in 0 until BAY_COUNT) {
-            val nj = if (lit[i]) (i + 1 until BAY_COUNT).firstOrNull { lit[it] } else null
-            if (nj != null) {
-                val v = min(litA[i].value * dead, litA[nj].value * dead)
-                outOn[i] = v; inOn[nj] = v
+        for ((i, j) in RackLayout.connections(lit)) {
+            val fromZ = bayTop(i) - BAY_H / 2f
+            val toZ = bayTop(j) - BAY_H / 2f
+            val from = iso.p(JACK_X, RD + popD[i], fromZ)
+            val to = iso.p(JACK_X, RD + popD[j], toZ)
+            val yMax = RD + max(popD[i], popD[j])
+            val bulge = 0.4f + 0.1f * (j - i - 1) + sway
+            val c1 = iso.p(JACK_X + 0.1f, yMax + bulge, fromZ - 0.12f)
+            val c2 = iso.p(JACK_X + 0.1f, yMax + bulge, toZ + 0.12f)
+            val cable = Path().apply {
+                moveTo(from.x, from.y); cubicTo(c1.x, c1.y, c2.x, c2.y, to.x, to.y)
+            }
+            val on = min(litA[i].value * glow, litA[j].value * glow)
+            if (on <= 0.001f) continue
+            drawPath(cable, Pal.line.copy(alpha = on), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+            drawPath(cable, Pal.orange.copy(alpha = on), style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
+            pm.setPath(cable, false)
+            for (k in 0 until 3) {
+                val u = (flow * (1f + i * 0.07f) + k / 3f) % 1f
+                val position = pm.getPosition(u * pm.length)
+                drawCircle(Color.White.copy(alpha = 0.9f * on), 2.2.dp.toPx(), position)
+                drawCircle(Pal.orangeDeep.copy(alpha = 0.9f * on), 2.2.dp.toPx(), position, style = Stroke(cableLineWidth))
             }
         }
         for (i in 0 until BAY_COUNT) {
-            val zm = bayTop(i) - BAY_H / 2f
-            val jUp = iso.p(JACK_X, RD + popD[i], zm + 0.14f)
-            val jDn = iso.p(JACK_X, RD + popD[i], zm - 0.14f)
-            val j = if (lit[i]) (i + 1 until BAY_COUNT).firstOrNull { lit[it] } else null
-            if (j != null) {
-                val zn = bayTop(j) - BAY_H / 2f
-                val a1 = iso.p(JACK_X, RD + popD[j], zn + 0.14f)
-                val yMax = RD + max(popD[i], popD[j])
-                val bulge = 0.4f + 0.1f * (j - i - 1) + sway
-                val c1 = iso.p(JACK_X + 0.1f, yMax + bulge, zm - 0.16f)
-                val c2 = iso.p(JACK_X + 0.1f, yMax + bulge, zn + 0.16f)
-                val cable = Path().apply {
-                    moveTo(jDn.x, jDn.y); cubicTo(c1.x, c1.y, c2.x, c2.y, a1.x, a1.y)
-                }
-                val on = min(litA[i].value * dead, litA[j].value * dead)
-                drawPath(cable, Pal.line.copy(alpha = on), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
-                drawPath(cable, Pal.orange.copy(alpha = on), style = Stroke(2.dp.toPx(), cap = StrokeCap.Round))
-                pm.setPath(cable, false)
-                val len = pm.length
-                for (k in 0 until 3) {
-                    val u = (flow * (1f + i * 0.07f) + k / 3f) % 1f
-                    val pos = pm.getPosition(u * len)
-                    drawCircle(Color.White.copy(alpha = 0.9f * on), 2.2.dp.toPx(), pos)
-                    drawCircle(Pal.orangeDeep.copy(alpha = 0.9f * on), 2.2.dp.toPx(), pos, style = Stroke(lw))
-                }
-            }
-            for ((jj, c) in listOf(jUp, jDn).withIndex()) {
-                if (i == 0 && jj == 0) continue
-                if (i == BAY_COUNT - 1 && jj == 1) continue
-                drawCircle(Color.White, 3.6.dp.toPx(), c)
-                val ja = if (jj == 0) inOn[i] else outOn[i]
-                drawCircle(lerp(Pal.line, Pal.orangeDeep, ja), 3.6.dp.toPx(), c, style = Stroke(1.4.dp.toPx()))
-                drawCircle(lerp(Pal.mute, Pal.orange, ja), 1.3.dp.toPx(), c)
-            }
+            val center = iso.p(JACK_X, RD + popD[i], bayTop(i) - BAY_H / 2f)
+            val on = litA[i].value * glow
+            drawCircle(Color.White, 3.6.dp.toPx(), center)
+            drawCircle(lerp(Pal.line, Pal.orangeDeep, on), 3.6.dp.toPx(), center, style = Stroke(1.4.dp.toPx()))
+            drawCircle(lerp(Pal.mute, Pal.orange, on), 1.3.dp.toPx(), center)
         }
         }
     }
