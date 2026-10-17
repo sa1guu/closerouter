@@ -7,7 +7,7 @@
 *Turn your phone into an LLM API router. Preset providers on the phone, plug in USB (or share LAN), and any OpenAI/Anthropic-compatible tool on the PC gets working endpoints — all traffic goes through the phone's network.*
 
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com)
-[![Version](https://img.shields.io/badge/version-1.0.15-E8741C)](../../releases)
+[![Version](https://img.shields.io/badge/version-1.0.18-E8741C)](../../releases)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## 特性

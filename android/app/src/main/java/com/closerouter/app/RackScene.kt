@@ -62,11 +62,6 @@ private const val BX1 = RW - 0.45f
 private const val BAY_H = 0.66f
 
 private const val BAY_D = 1.4f
-private const val MAC_D = 1.0f
-private const val MY0 = 0.96f
-private const val MY1 = 2.52f
-private const val MZ0 = 5.38f
-private const val MZ1 = 6.72f
 private const val FAN_N = 4
 
 private fun bayTop(i: Int) = RH - 1.75f - i * 0.72f
@@ -551,11 +546,11 @@ private fun DrawScope.bayTopParts(
     }
 }
 
-/** Shared AI panel renderer used by both the fixed side screen and the ejectable module. */
 private fun DrawScope.drawAiPanel(
-    iso: Iso, x: Float, y0: Float, y1: Float, z0: Float, z1: Float,
-    on: Boolean, runT: Float, offT: Float, t: Float, lw: Float, s: Float
+    iso: Iso, x: Float, on: Boolean, runT: Float, offT: Float
 ) {
+    val (y0, y1, z0, z1) = AiModuleLayout.screen
+    val s = iso.s
     fun panel(yA: Float, yB: Float, zA: Float, zB: Float, inset: Float = 0f): Path = roundedQuadPath(
         listOf(iso.p(x, yB, zB), iso.p(x, yA, zB), iso.p(x, yA, zA), iso.p(x, yB, zA)), inset
     )
@@ -565,11 +560,12 @@ private fun DrawScope.drawAiPanel(
     val halfHeight = (z1 - z0) * 0.5f * if (stopping) RackPowerVisuals.shutdownAperture(offT) else 1f
     val window = panel(y0, y1, centerZ - halfHeight, centerZ + halfHeight)
 
-    drawPath(panel(y0 - 0.11f, y1 + 0.11f, z0 - 0.08f, z1 + 0.08f, 0.03f), Color(0xFFD6D8DC))
-    drawPath(panel(y0 - 0.07f, y1 + 0.07f, z0 - 0.05f, z1 + 0.05f, 0.02f), Color.White)
+    for ((bounds, color) in listOf(AiModuleLayout.outerBezel to Color(0xFFD6D8DC), AiModuleLayout.innerBezel to Color.White)) {
+        drawPath(panel(bounds.y0, bounds.y1, bounds.z0, bounds.z1, 0.02f), color)
+    }
     drawPath(panel(y0, y1, z0, z1), Color(0xFF15171B))
     if (on || stopping) {
-        drawPath(window, if (stopping) Color(0xFFFFE8D0) else Color(0xFFFFE8D0))
+        drawPath(window, lerp(Color(0xFFFFE8D0), Color(0xFF15171B), shutdown))
     }
     clipPath(window) {
         if (!on && !stopping) return@clipPath
@@ -627,44 +623,40 @@ private fun DrawScope.drawAiPanel(
             iso.p(x, y0 + 0.08f, centerZ), iso.p(x, y1 - 0.08f, centerZ),
             (0.010f + 0.020f * (1f - shutdown)) * s, cap = StrokeCap.Round)
     }
-    // Small full-width glare and service LED, kept clear of all content.
-    drawLine(Color.White.copy(alpha = 0.56f), iso.p(x, y0 + 0.1f, z0 + 0.09f),
-        iso.p(x, y1 - 0.1f, z0 + 0.09f), lw * 1.1f)
-    drawCircle(if (on) Pal.orange else Color(0xFF8D8F94), 1.6.dp.toPx(), iso.p(x, y1 - 0.16f, z0 + 0.09f))
 }
 
-private fun DrawScope.drawMac(iso: Iso, m: Float, on: Boolean, runT: Float, offT: Float, t: Float, lw: Float) {
-    val d = m.coerceIn(0f, 1.15f) * MAC_D
+private fun DrawScope.drawAiModule(iso: Iso, progress: Float, on: Boolean, runT: Float, offT: Float, lw: Float) {
+    val d = AiModuleLayout.extension(progress)
     val xf = RW + d
-    val slot = quad(iso.p(RW, MY0, MZ1), iso.p(RW, MY1, MZ1), iso.p(RW, MY1, MZ0), iso.p(RW, MY0, MZ0))
-    drawPath(slot, Color(0xFF2A2A2F)); drawPath(slot, Pal.line, style = Stroke(lw))
-    fun face(p: Path, c: Color) { drawPath(p, c); drawPath(p, Pal.line, style = Stroke(lw, join = StrokeJoin.Round)) }
-    if (d > 0.003f) {
-        face(quad(iso.p(RW, MY0, MZ1), iso.p(xf, MY0, MZ1), iso.p(xf, MY1, MZ1), iso.p(RW, MY1, MZ1)), Pal.top)
-        face(quad(iso.p(RW, MY1, MZ0), iso.p(xf, MY1, MZ0), iso.p(xf, MY1, MZ1), iso.p(RW, MY1, MZ1)), Pal.front)
-        if (d > 0.45f) {
-            for (k in 0 until 5) {
-                val x = RW + 0.2f + k * 0.07f
-                if (x < xf - 0.1f) drawLine(Pal.lineSoft, iso.p(x, MY0 + 0.4f, MZ1), iso.p(x, MY1 - 0.4f, MZ1), strokeWidth = lw)
+    val (y0, y1, z0, z1) = AiModuleLayout.frame
+    fun panel(x: Float, bounds: AiPanelBounds, round: Float = 0f): Path = roundedQuadPath(
+        listOf(iso.p(x, bounds.y1, bounds.z1), iso.p(x, bounds.y0, bounds.z1),
+            iso.p(x, bounds.y0, bounds.z0), iso.p(x, bounds.y1, bounds.z0)), round
+    )
+    fun face(path: Path, color: Color) {
+        drawPath(path, color)
+        drawPath(path, Pal.line, style = Stroke(lw, join = StrokeJoin.Round))
+    }
+    if (d > 0f) {
+        face(panel(RW, AiModuleLayout.frame), Color(0xFF15171B))
+        face(quad(iso.p(RW, y0, z1), iso.p(xf, y0, z1), iso.p(xf, y1, z1), iso.p(RW, y1, z1)), Pal.top)
+        face(quad(iso.p(RW, y1, z0), iso.p(xf, y1, z0), iso.p(xf, y1, z1), iso.p(RW, y1, z1)), Pal.side)
+    }
+
+    // Closed and extended states use this same face; only its X plane changes.
+    face(panel(xf, AiModuleLayout.frame, 0.025f), Color(0xFFFDFDFE))
+    drawAiPanel(iso, xf, on, runT, offT)
+    for ((y, z) in AiModuleLayout.screws) {
+        val screw = Path().apply {
+            for (k in 0..16) {
+                val a = (2.0 * PI * k / 16).toFloat()
+                val p = iso.p(xf, y + cos(a) * AiModuleLayout.SCREW_RADIUS, z + sin(a) * AiModuleLayout.SCREW_RADIUS)
+                if (k == 0) moveTo(p.x, p.y) else lineTo(p.x, p.y)
             }
+            close()
         }
-    }
-    face(quad(iso.p(xf, MY0, MZ1), iso.p(xf, MY1, MZ1), iso.p(xf, MY1, MZ0), iso.p(xf, MY0, MZ0)), Color(0xFFF4F4F7))
-    // New panel proportions: centered, inset display matching the side instrument face.
-    val px0 = MY0 + 0.18f
-    val px1 = MY1 - 0.18f
-    val pz0 = MZ0 + 0.26f
-    val pz1 = MZ1 - 0.18f
-    drawAiPanel(iso, xf, px0, px1, pz0, pz1, on, runT, offT, t, lw, iso.s)
-    // Side vent slots and retaining screws below the new screen.
-    for (k in 0 until 6) {
-        val z = pz0 - 0.08f - k * 0.055f
-        drawLine(Pal.lineSoft, iso.p(xf, px0 + 0.08f, z), iso.p(xf, px1 - 0.08f, z), strokeWidth = lw)
-    }
-    for (y in listOf(MY0 + 0.12f, MY1 - 0.12f)) {
-        for (z in listOf(MZ0 + 0.12f, MZ1 - 0.12f)) {
-            drawCircle(Pal.line, 1.1.dp.toPx(), iso.p(xf, y, z))
-        }
+        drawPath(screw, Color(0xFFE0E2E5))
+        drawPath(screw, Pal.line, style = Stroke(lw * 0.65f))
     }
 }
 
@@ -1000,9 +992,17 @@ fun RackScene(
             detectTapGestures { oBase ->
                 val iso = isoFor(size.width.toFloat(), size.height.toFloat(), 1.5f * liftA.value + 1.9f * lidA.value)
                 val o = Offset(oBase.x, oBase.y + LIFT_H * liftA.value.coerceIn(0f, 1f) * Z_SCALE * iso.s)
-                val md = macA.value.coerceIn(0f, 1.15f) * MAC_D
+                val md = AiModuleLayout.extension(macA.value)
+                val moduleFrame = AiModuleLayout.frame
                 val (my, mz) = iso.unprojX(o, RW + md)
-                if (my in MY0..MY1 && mz in MZ0..MZ1) { macOut = !macOut; return@detectTapGestures }
+                var moduleHit = moduleFrame.contains(my, mz)
+                if (!moduleHit && md > 0f) {
+                    val (topX, topY) = iso.unprojZ(o, moduleFrame.z1)
+                    val (sideX, sideZ) = iso.unprojY(o, moduleFrame.y1)
+                    moduleHit = (topX in RW..(RW + md) && topY in moduleFrame.y0..moduleFrame.y1) ||
+                        (sideX in RW..(RW + md) && sideZ in moduleFrame.z0..moduleFrame.z1)
+                }
+                if (moduleHit) { macOut = !macOut; return@detectTapGestures }
                 val (x, z) = iso.unprojY(o, RD)
                 val dx = x - PWR_X; val dz = z - pwrZ()
                 if (dx * dx + dz * dz <= (PWR_R + 0.12f) * (PWR_R + 0.12f)) { onPowerNow(); return@detectTapGestures }
@@ -1240,14 +1240,8 @@ fun RackScene(
         fun sideQuad(y0: Float, y1: Float, z0: Float, z1: Float, inset: Float = 0f): Path = roundedQuadPath(
             listOf(iso.p(RW, y1, z1), iso.p(RW, y0, z1), iso.p(RW, y0, z0), iso.p(RW, y1, z0)), inset
         )
-        val displayY0 = 1.02f
-        val displayY1 = 2.52f
-        val aiTop = 6.82f
-        val aiBottom = 5.5f
-        drawPath(sideQuad(displayY0 - 0.15f, displayY1 + 0.15f, aiBottom - 0.25f, aiTop + 0.12f, 0.035f), Color(0xFFFDFDFE))
-        drawPath(sideQuad(displayY0 - 0.15f, displayY1 + 0.15f, aiBottom - 0.25f, aiTop + 0.12f, 0.035f), Pal.line, style = Stroke(lw))
-        drawPath(sideQuad(displayY0 - 0.06f, displayY1 + 0.06f, aiBottom - 0.04f, aiTop + 0.06f), Color(0xFFD1D2D7))
-        drawAiPanel(iso, RW, displayY0, displayY1, aiBottom, aiTop, live, aiRunT, aiOffT, t, lw, s)
+        val displayY0 = AiModuleLayout.screen.y0
+        val displayY1 = AiModuleLayout.screen.y1
         val sideItems = listOf(
             Triple("TOTAL TOK.", fmtTokens(totalTokens), 5.08f),
             Triple("TTFT MS", if (ttftMs >= 0) "$ttftMs" else "--", 3.58f),
@@ -1290,9 +1284,7 @@ fun RackScene(
             moveTo(a.x, a.y); lineTo(b.x, b.y); lineTo(c.x, c.y); close()
         }
         drawPath(serviceMark, Pal.line, style = Stroke(lw))
-        if (macA.value > 0.01f) {
-            drawMac(iso, macA.value, live, aiRunT, aiOffT, t, lw)
-        }
+        drawAiModule(iso, macA.value, live, aiRunT, aiOffT, lw)
 
         // top deck: hinged lid carrying the fans, cavity + antennas underneath
         val la = lidA.value.coerceIn(0f, 1f)
