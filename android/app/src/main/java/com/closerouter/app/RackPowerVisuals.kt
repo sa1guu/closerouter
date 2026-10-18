@@ -12,6 +12,11 @@ internal object RackPowerVisuals {
         return remaining * remaining
     }
 
+    fun receiverHeight(progress: Float): Float {
+        val p = (progress / 0.9f).coerceIn(0f, 1f)
+        return 2.2f * (1f - p * p * (3f - 2f * p))
+    }
+
     fun advanceFanSpeed(current: Float, powered: Boolean, dt: Float): Float {
         val duration = if (powered) 1.4f else 2.6f
         val step = dt.coerceAtLeast(0f) / duration

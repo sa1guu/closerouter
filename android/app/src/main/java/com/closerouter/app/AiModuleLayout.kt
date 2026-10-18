@@ -12,7 +12,10 @@ internal object AiModuleLayout {
     const val MAX_EXTENSION = 1.15f
     const val SCREW_RADIUS = 0.035f
 
-    val screen = AiPanelBounds(1.02f, 2.52f, 5.5f, 6.82f)
+    val screen = AiPanelBounds(
+        1.02f + RackLayout.SIDE_DISPLAY_Y_SHIFT, 2.52f + RackLayout.SIDE_DISPLAY_Y_SHIFT,
+        5.5f + RackLayout.SIDE_DISPLAY_Z_SHIFT, 6.82f + RackLayout.SIDE_DISPLAY_Z_SHIFT
+    )
     // The entire original side instrument, including its lower bezel, slides as one rigid face.
     val frame = screen.expand(side = 0.15f, bottom = 0.25f, top = 0.12f)
     val outerBezel = screen.expand(side = 0.055f, bottom = 0.045f)

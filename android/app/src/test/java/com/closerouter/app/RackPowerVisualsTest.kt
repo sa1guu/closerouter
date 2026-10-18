@@ -61,6 +61,17 @@ class RackPowerVisualsTest {
     }
 
     @Test
+    fun receiverDescendsFromAboveAndSettlesAtTheUsbSocket() {
+        assertEquals(2.2f, RackPowerVisuals.receiverHeight(0f), 0f)
+        val high = RackPowerVisuals.receiverHeight(0.2f)
+        val low = RackPowerVisuals.receiverHeight(0.65f)
+        assertTrue(high > low && low > 0f)
+        assertEquals(0f, RackPowerVisuals.receiverHeight(0.9f), 0f)
+        assertEquals(0f, RackPowerVisuals.receiverHeight(1f), 0f)
+        assertEquals(2.2f, RackPowerVisuals.receiverHeight(-1f), 0f)
+    }
+
+    @Test
     fun shutdownShutterClosesContinuouslyAndEndsAtBlack() {
         val initial = RackPowerVisuals.shutdownAperture(0f)
         val middle = RackPowerVisuals.shutdownAperture(RackPowerVisuals.SHUTDOWN_SECONDS / 2f)

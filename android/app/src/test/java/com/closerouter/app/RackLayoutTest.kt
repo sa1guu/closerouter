@@ -26,17 +26,63 @@ class RackLayoutTest {
     }
 
     @Test
-    fun identifierAndIndicatorsShareOneRowWithSpacing() {
-        val labelWidth = 5 * RackLayout.TOP_LABEL_SIZE * 0.65f
-        assertTrue(RackLayout.TOP_LABEL_X + labelWidth + 0.1f < RackLayout.TOP_DOT_X)
-        assertEquals(RackLayout.TOP_LABEL_Y + RackLayout.TOP_LABEL_SIZE * 0.6f, RackLayout.TOP_DOT_Y, 0.0001f)
-        assertTrue(RackLayout.TOP_DOT_X + (RackLayout.TOP_DOT_COUNT - 1) * RackLayout.TOP_DOT_PITCH + 0.1f < 5.6f)
+    fun routerAndPortsShareTheRearRowWithSpacing() {
+        val labelWidth = 6 * RackLayout.TOP_LABEL_SIZE * 0.62f
+        assertTrue(RackLayout.TOP_LIGHT_END_X + 0.2f < RackLayout.TOP_LABEL_X)
+        assertTrue(RackLayout.TOP_LABEL_X + labelWidth + 0.1f < RackLayout.TOP_TYPE_C_X - 0.225f)
+        assertTrue(RackLayout.TOP_TYPE_C_X + 0.225f + 0.1f < RackLayout.TOP_USB_X - 0.245f)
+        assertTrue(RackLayout.TOP_USB_X + 0.245f < 5.6f)
     }
 
     @Test
     fun trimsOnlyTheNearEndOfPowerCable() {
         assertTrue("只裁剪近端约 20%", RackLayout.CABLE_START in 0.15f..0.25f)
         assertTrue("远端保留大部分线缆", 1f - RackLayout.CABLE_START > 0.7f)
+    }
+
+    @Test
+    fun ejectedMiddleUnitUsesOneRunFromFirstToThird() {
+        assertEquals(listOf(CableRun(0, 2, 1)),
+            RackLayout.cableRuns(listOf(true, true, true), floatArrayOf(0f, 1.4f, 0f)))
+        assertEquals(listOf(CableRun(0, 1), CableRun(1, 2)),
+            RackLayout.cableRuns(listOf(true, true, true), floatArrayOf(0f, 0f, 0f)))
+    }
+
+    @Test
+    fun mergedArcKeepsTheRemainingCableRuns() {
+        assertEquals(listOf(CableRun(0, 1), CableRun(1, 3, 2), CableRun(3, 4)),
+            RackLayout.cableRuns(List(5) { true }, floatArrayOf(0f, 0f, 1.4f, 0f, 0f)))
+        assertEquals(listOf(CableRun(0, 3, 1)),
+            RackLayout.cableRuns(listOf(true, true, false, true), floatArrayOf(0f, 1.4f, 0f, 0f)))
+    }
+
+    @Test
+    fun singleArcPassesThroughTheEjectedPointAtItsMidpoint() {
+        val start = 2f
+        val middle = -1.5f
+        val end = 4f
+        val (control1, control2) = RackLayout.arcCubicControls(start, middle, end)
+        assertEquals(middle, 0.125f * start + 0.375f * control1 + 0.375f * control2 + 0.125f * end, 0.0001f)
+    }
+
+    @Test
+    fun mergedArcUsesWideHandlesForARoundedBend() {
+        val (height1, height2) = RackLayout.arcCubicControls(1f, 0f, -1f)
+        assertTrue(height1 > 1f)
+        assertTrue(height2 < -1f)
+        val (depth1, depth2) = RackLayout.arcCubicControls(0f, 1.4f, 0f)
+        assertEquals(depth1, depth2, 0.0001f)
+        assertTrue(depth1 > 1.4f)
+    }
+
+    @Test
+    fun endpointEjectionOrTooFewNodesKeepsTheOriginalRun() {
+        assertTrue(RackLayout.cableRuns(emptyList(), floatArrayOf()).isEmpty())
+        assertTrue(RackLayout.cableRuns(listOf(true), floatArrayOf(1f)).isEmpty())
+        assertEquals(listOf(CableRun(0, 1)),
+            RackLayout.cableRuns(listOf(true, true), floatArrayOf(1.4f, 0f)))
+        assertEquals(listOf(CableRun(0, 1), CableRun(1, 2)),
+            RackLayout.cableRuns(List(3) { true }, floatArrayOf(1.4f, 0f, 0f)))
     }
 
     @Test
@@ -61,9 +107,16 @@ class RackLayoutTest {
     }
 
     @Test
-    fun topIdentifierClearsTheRearFan() {
-        // Fan 3 center (RW-1.15, RD/2), radius .81; indicator row must sit behind its rear edge.
-        val fanRearEdge = 2.8f / 2f - 0.81f
-        assertTrue(RackLayout.TOP_DOT_Y < fanRearEdge - 0.15f)
+    fun topPortsClearTheFanTray() {
+        assertTrue(RackLayout.TOP_ROW_Y + 0.20f + 0.1f < RackLayout.TOP_FAN_Y - 1.08f)
+        assertTrue(RackLayout.TOP_FAN_Y + 1.08f < RackLayout.CABINET_DEPTH - 0.25f)
+    }
+
+    @Test
+    fun powerButtonClearsBothEdgesOfItsOrangePanel() {
+        val topOffset = RackLayout.POWER_TOP_OFFSET - RackLayout.POWER_RADIUS
+        val bottomOffset = RackLayout.POWER_TOP_OFFSET + RackLayout.POWER_RADIUS
+        assertTrue(topOffset > RackLayout.SHELL_RADIUS + 0.04f + 0.08f)
+        assertTrue(bottomOffset < 1.45f - 0.08f)
     }
 }

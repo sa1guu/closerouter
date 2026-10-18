@@ -8,12 +8,12 @@ import kotlin.math.max
 
 class AiModuleLayoutTest {
     @Test
-    fun frameMatchesTheEntireOriginalSideInstrument() {
+    fun frameMatchesTheRepositionedSideInstrument() {
         val frame = AiModuleLayout.frame
-        assertEquals(0.87f, frame.y0, 0.0001f)
-        assertEquals(2.67f, frame.y1, 0.0001f)
-        assertEquals(5.25f, frame.z0, 0.0001f)
-        assertEquals(6.94f, frame.z1, 0.0001f)
+        assertEquals(1.11f, frame.y0, 0.0001f)
+        assertEquals(2.91f, frame.y1, 0.0001f)
+        assertEquals(5.07f, frame.z0, 0.0001f)
+        assertEquals(6.76f, frame.z1, 0.0001f)
     }
 
     @Test
@@ -70,11 +70,21 @@ class AiModuleLayoutTest {
     }
 
     @Test
+    fun frontAndTopMarginsAreBalancedWithoutResizingThePixelDisplay() {
+        val frame = AiModuleLayout.frame
+        val screen = AiModuleLayout.screen
+        assertTrue(RackLayout.CABINET_DEPTH - frame.y1 in 0.4f..0.5f)
+        assertTrue(7.2f - frame.z1 in 0.4f..0.5f)
+        assertEquals(1.5f, screen.y1 - screen.y0, 0.0001f)
+        assertTrue(frame.y1 + RackLayout.SHELL_RADIUS < RackLayout.CABINET_DEPTH)
+    }
+
+    @Test
     fun entireAssemblyFitsTheCabinetAndClearsTheNextDisplay() {
         val frame = AiModuleLayout.frame
         assertTrue(frame.y0 > 0.08f)
-        assertTrue(frame.y1 < 2.7f)
-        assertTrue(frame.z1 < 7.08f)
-        assertTrue(frame.z0 > 5.08f + 0.05f + 0.1f)
+        assertTrue(frame.y1 < RackLayout.CABINET_DEPTH - RackLayout.SHELL_RADIUS)
+        assertTrue(frame.z1 < 7.2f - RackLayout.SHELL_RADIUS)
+        assertTrue(frame.z0 > 5.08f + RackLayout.SIDE_DISPLAY_Z_SHIFT + 0.05f + 0.1f)
     }
 }
