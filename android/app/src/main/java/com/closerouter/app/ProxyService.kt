@@ -11,21 +11,29 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.widget.Toast
 import com.closerouter.app.proxy.ProxyServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 
 /**
- * 转发前台服务：onCreate 即起 HTTP server（adb 可直接 am start-foreground-service 拉起），
+ * 转发前台服务：监听成功后获取唤醒锁，监听失败则移除通知并退出。
  * dataSync 类型 + 常驻通知 + PARTIAL_WAKE_LOCK 防后台杀死。
  */
 class ProxyService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var errorJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
         startForegroundWithNotification()
-        acquireWakeLock()
-        ProxyServer.start(App.port)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -33,11 +41,30 @@ class ProxyService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        if (!ProxyServer.running.value) ProxyServer.start(App.port)
+        if (!ProxyServer.start(App.port)) {
+            stopAfterStartFailure()
+            return START_NOT_STICKY
+        }
+        if (wakeLock == null) acquireWakeLock()
+        if (errorJob == null) {
+            errorJob = serviceScope.launch {
+                ProxyServer.startError.filterNotNull().collect { stopAfterStartFailure() }
+            }
+        }
         return START_STICKY
     }
 
+    private fun stopAfterStartFailure() {
+        ProxyServer.startError.value?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }
+        ProxyServer.stop()
+        runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
+        wakeLock = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     override fun onDestroy() {
+        serviceScope.cancel()
         ProxyServer.stop()
         runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
         wakeLock = null

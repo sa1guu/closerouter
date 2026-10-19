@@ -14,6 +14,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.withTransform
@@ -24,6 +26,16 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import androidx.compose.ui.unit.dp
 import kotlin.math.PI
 import kotlin.math.abs
@@ -87,7 +99,7 @@ private class LidIso(val b: Iso, val th: Float, val hy: Float) : Iso(b.s, b.cx, 
 
 private const val LIFT_H = 1.5f
 private const val LID_MAX = 1.08f
-private const val CAV = 1.25f
+private const val CAV = RackHardwareLayout.CAVITY_DEPTH
 private const val LID_Y = 0.3f
 
 private fun isoFor(w: Float, h: Float, extra: Float = 0f): Iso {
@@ -95,7 +107,7 @@ private fun isoFor(w: Float, h: Float, extra: Float = 0f): Iso {
     val xMax = (RW + 0.8f + 0.8f) * K
     val zTop = (RH + extra) * Z_SCALE
     val yTop = -zTop
-    val yBottom = (RW + RD + 1.6f) * 0.5f
+    val yBottom = (RW + RD + 1.6f) * 0.5f - RackHardwareLayout.BASE_BOTTOM * Z_SCALE
     val s = min(w * 0.9f / (xMax - xMin), h * 0.9f / (yBottom - yTop))
     val cx = w / 2f - (xMin + xMax) / 2f * s
     val cy = h / 2f - (yTop + yBottom) / 2f * s
@@ -227,14 +239,12 @@ private fun DrawScope.planeText(
     mat.values[Matrix.TranslateY] = origin.y
     withTransform({ transform(mat) }) {
         drawText(
-            m, text, Offset.Zero,
-            TextStyle(
+            m.measure(text, TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = fs.toSp(),
-                color = color,
                 fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
-            ),
-            softWrap = false, maxLines = 1
+            ), softWrap = false, maxLines = 1),
+            color = color, topLeft = Offset.Zero
         )
     }
 }
@@ -252,14 +262,12 @@ private fun DrawScope.sideText(
     mat.values[Matrix.TranslateY] = origin.y
     withTransform({ transform(mat) }) {
         drawText(
-            m, text, Offset.Zero,
-            TextStyle(
+            m.measure(text, TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = fs.toSp(),
-                color = color,
                 fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
-            ),
-            softWrap = false, maxLines = 1
+            ), softWrap = false, maxLines = 1),
+            color = color, topLeft = Offset.Zero
         )
     }
 }
@@ -939,17 +947,280 @@ private fun DrawScope.drawPcb(iso: Iso, lh: Float, t: Float, flow: Float, active
     }
 }
 
-private const val DRV_N = 7
-private const val DRV_X0 = 0.65f
-private const val DRV_PITCH = 0.7f
-private const val DRV_T = 0.5f
-private const val DRV_Y0 = 1.05f
-private const val DRV_Y1 = 2.0f
-private const val DRV_H = 1.1f
-private const val DRV_UP = 0.75f
+private fun opticHit(iso: Iso, point: Offset, extension: FloatArray, cableExtension: FloatArray, entrance: FloatArray): Int {
+    for (k in 0 until RackHardwareLayout.OPTIC_COUNT) {
+        if (entrance[k] < 1f) continue
+        val x = RackHardwareLayout.opticX(k)
+        val half = RackHardwareLayout.OPTIC_WIDTH / 2f + 0.035f
+        val outletY = RackHardwareLayout.opticCableOutlet(k, extension[k], cableExtension[k]).y
+        val z0 = RackHardwareLayout.OPTIC_Z0 - 0.035f
+        val z1 = RackHardwareLayout.OPTIC_Z1 + 0.035f
+        val faces = listOf(
+            listOf(iso.p(x - half, outletY, z0), iso.p(x + half, outletY, z0), iso.p(x + half, outletY, z1), iso.p(x - half, outletY, z1)),
+            listOf(iso.p(x - half, RackHardwareLayout.OPTIC_FRONT, z1), iso.p(x + half, RackHardwareLayout.OPTIC_FRONT, z1),
+                iso.p(x + half, outletY, z1), iso.p(x - half, outletY, z1)),
+            listOf(iso.p(x + half, RackHardwareLayout.OPTIC_FRONT, z0), iso.p(x + half, outletY, z0),
+                iso.p(x + half, outletY, z1), iso.p(x + half, RackHardwareLayout.OPTIC_FRONT, z1))
+        )
+        if (faces.any { inQuad(point, it) }) return k
+    }
+    return -1
+}
+
+private fun DrawScope.drawOpticBody(m: TextMeasurer, iso: Iso, x: Float, visibleBack: Float,
+    frontY: Float, z0: Float, z1: Float, lw: Float) {
+    val half = RackHardwareLayout.OPTIC_WIDTH * 0.5f
+    val rear = frontY - RackHardwareLayout.OPTIC_BODY_LENGTH
+    val shoulder = frontY - RackHardwareLayout.OPTIC_HEAD_LENGTH
+    box(iso, x - half, x + half, visibleBack, frontY, z0 + 0.02f, z1,
+        Color(0xFFD9DCE0), Color(0xFFB8BDC3), Color(0xFF969CA4), lw)
+    val topSurface = quad(iso.p(x - half, visibleBack, z1), iso.p(x + half, visibleBack, z1),
+        iso.p(x + half, frontY, z1), iso.p(x - half, frontY, z1))
+    clipPath(topSurface) {
+        fun topPlate(xa: Float, xb: Float, ya: Float, yb: Float, round: Float = 0f) = roundedQuadPath(listOf(
+            iso.p(xa, ya, z1 + 0.004f), iso.p(xb, ya, z1 + 0.004f),
+            iso.p(xb, yb, z1 + 0.004f), iso.p(xa, yb, z1 + 0.004f)
+        ), round)
+        val shell = topPlate(x - half + 0.014f, x + half - 0.014f, rear + 0.018f, shoulder - 0.04f, 0.018f)
+        drawPath(shell, Brush.linearGradient(listOf(Color(0xFFCACDD1), Color(0xFFF0F1F2), Color(0xFFD0D4D8)),
+            iso.p(x - half, rear, z1), iso.p(x + half, rear, z1)))
+        for (edgeX in listOf(x - half + 0.022f, x + half - 0.022f)) {
+            drawLine(Color(0xFFF9F9FA), iso.p(edgeX, rear + 0.04f, z1 + 0.009f),
+                iso.p(edgeX, shoulder - 0.045f, z1 + 0.009f), lw * 0.8f)
+        }
+        for (screwX in listOf(x - half + 0.06f, x + half - 0.06f)) {
+            drawPath(iso.floorCircle(screwX, rear + 0.10f, z1 + 0.012f, 0.025f, 12), Color(0xFF959CA5))
+            drawPath(iso.floorCircle(screwX, rear + 0.10f, z1 + 0.014f, 0.012f, 10), Color(0xFFDDE0E4))
+        }
+        drawPath(topPlate(x - half, x + half, shoulder - 0.045f, shoulder + 0.035f), Color(0xFFB6BBC1))
+        drawLine(Color(0xFF888F98), iso.p(x - half + 0.01f, shoulder, z1 + 0.012f),
+            iso.p(x + half - 0.01f, shoulder, z1 + 0.012f), lw * 0.8f)
+        drawPath(topPlate(x - half + 0.025f, x + half - 0.025f, shoulder + 0.035f, frontY - 0.035f, 0.035f), Color(0xFFF3F3F1))
+        for (labelY in listOf(shoulder + 0.065f, frontY - 0.095f)) {
+            drawPath(topPlate(x - half + 0.05f, x + half - 0.05f, labelY, labelY + 0.035f), Color(0xFF8E949B))
+        }
+        topText(m, iso, "QSFP", x - half + 0.055f, shoulder + 0.13f, z1 + 0.014f,
+            0.105f * iso.s, Color(0xFF545A62), true)
+        for (q in 0 until 9) {
+            val barcodeY = shoulder + 0.29f + q * 0.019f
+            drawLine(Color(0xFF626972), iso.p(x - half + 0.06f, barcodeY, z1 + 0.015f),
+                iso.p(x + half - 0.06f, barcodeY, z1 + 0.015f), lw * if (q % 3 == 0) 0.85f else 0.4f)
+        }
+    }
+    val sideSurface = quad(iso.p(x + half, visibleBack, z0 + 0.02f), iso.p(x + half, frontY, z0 + 0.02f),
+        iso.p(x + half, frontY, z1), iso.p(x + half, visibleBack, z1))
+    clipPath(sideSurface) {
+        drawLine(Color(0xFFBFC4CA), iso.p(x + half, rear + 0.06f, z0 + 0.075f),
+            iso.p(x + half, shoulder - 0.05f, z0 + 0.075f), lw * 0.7f)
+        for (fastenerY in listOf(rear + 0.11f, shoulder - 0.12f)) {
+            val screw = roundedQuadPath(listOf(
+                iso.p(x + half, fastenerY - 0.025f, z0 + 0.15f), iso.p(x + half, fastenerY + 0.025f, z0 + 0.15f),
+                iso.p(x + half, fastenerY + 0.025f, z0 + 0.20f), iso.p(x + half, fastenerY - 0.025f, z0 + 0.20f)
+            ), 0.35f)
+            drawPath(screw, Color(0xFF69727D))
+        }
+    }
+}
+
+private fun DrawScope.drawOptics(m: TextMeasurer, iso: Iso, extension: FloatArray, cableExtension: FloatArray,
+    entrance: FloatArray, lw: Float) {
+    val back = RackHardwareLayout.OPTIC_FRONT
+    val z0 = RackHardwareLayout.OPTIC_Z0
+    val z1 = RackHardwareLayout.OPTIC_Z1
+    val midZ = (z0 + z1) * 0.5f
+    val half = RackHardwareLayout.OPTIC_WIDTH / 2f
+    val widthScale = RackHardwareLayout.OPTIC_WIDTH / 0.66f
+    val connectorTop = Color(0xFFB9BCC1)
+    val connectorFront = Color(0xFF93979D)
+    val connectorSide = Color(0xFF7D8289)
+    fun front(xa: Float, xb: Float, y: Float, za: Float, zb: Float) = quad(
+        iso.p(xa, y, za), iso.p(xb, y, za), iso.p(xb, y, zb), iso.p(xa, y, zb)
+    )
+    for (k in 0 until RackHardwareLayout.OPTIC_COUNT) {
+        val x = RackHardwareLayout.opticX(k)
+        val slot = front(x - half - 0.035f, x + half + 0.035f, back + 0.005f, z0 - 0.02f, z1 + 0.02f)
+        drawPath(slot, Color(0xFF343C46))
+        drawPath(slot, Color(0xFF9AA4AF), style = Stroke(lw))
+        planeText(m, iso, "%02d".format(k + 1), x - 0.12f * widthScale, 0.15f, 0.105f * iso.s, Pal.mute, y = back + 0.006f)
+    }
+    for (k in 0 until RackHardwareLayout.OPTIC_COUNT) {
+        if (entrance[k] <= 0f) continue
+        val arrivalDepth = RackHardwareLayout.opticEntranceDepth(entrance[k])
+        withTransform({ translate(-arrivalDepth * K * iso.s, arrivalDepth * 0.5f * iso.s) }) {
+        val x = RackHardwareLayout.opticX(k)
+        val y = RackHardwareLayout.opticFront(extension[k])
+        val bodyBack = RackHardwareLayout.opticBodyBack(extension[k], entrance[k])
+        drawOpticBody(m, iso, x, bodyBack, y, z0, z1, lw)
+        drawPath(front(x - half + 0.045f, x + half - 0.045f, y + 0.006f, z0 + 0.045f, z1 - 0.045f), Color(0xFF27313B))
+        val socketHalf = RackHardwareLayout.OPTIC_SOCKET_HALF_WIDTH
+        val socket = front(x - socketHalf, x + socketHalf, y + 0.01f, midZ - 0.105f, midZ + 0.105f)
+        drawPath(socket, Color(0xFF949AA2))
+        drawPath(socket, Color(0xFFE6E8EA), style = Stroke(lw * 0.8f))
+        drawPath(front(x - socketHalf + 0.022f, x + socketHalf - 0.022f, y + 0.012f,
+            midZ - 0.083f, midZ + 0.083f), Color(0xFF20262D))
+        val connectorY = RackHardwareLayout.opticConnectorOrigin(extension[k], cableExtension[k])
+        val plugHalf = RackHardwareLayout.OPTIC_PLUG_HALF_WIDTH
+        box(iso, x - plugHalf, x + plugHalf,
+            max(y + 0.012f, connectorY + 0.015f), connectorY + 0.23f, midZ - 0.075f, midZ + 0.075f,
+            Color(0xFFDEE1E5), Color(0xFFBFC4CA), Color(0xFF9CA4AD), lw * 0.6f)
+        box(iso, x - 0.205f * widthScale, x + 0.205f * widthScale, connectorY + 0.22f, connectorY + 0.56f, midZ - 0.12f, midZ + 0.12f,
+            connectorTop, connectorFront, connectorSide, lw * 0.75f)
+        box(iso, x - 0.10f * widthScale, x + 0.10f * widthScale, connectorY + 0.28f, connectorY + 0.47f, midZ + 0.12f, midZ + 0.155f,
+            Color(0xFFD1D3D6), connectorFront, connectorSide, lw * 0.6f)
+        for (q in 0 until 4) {
+            val yy = connectorY + 0.59f + q * 0.055f
+            box(iso, x - 0.17f * widthScale, x + 0.17f * widthScale, yy - 0.02f, yy + 0.02f, midZ - 0.095f, midZ + 0.095f,
+                Color(0xFFCACDD1), Color(0xFFA8ADB4), Color(0xFF939AA3), lw * 0.45f)
+        }
+        val outletY = RackHardwareLayout.opticCableOutlet(k, extension[k], cableExtension[k]).y
+        box(iso, x - 0.135f * widthScale, x + 0.135f * widthScale, connectorY + 0.78f, outletY,
+            midZ - 0.075f, midZ + 0.075f, Color(0xFFE4E5E5), Color(0xFFC3C7CA), Color(0xFFB1B7BC), lw * 0.5f)
+        for (strand in 0 until RackHardwareLayout.OPTIC_STRAND_COUNT) {
+            val outlet = RackHardwareLayout.opticCableOutlet(k, extension[k], cableExtension[k], strand)
+            val collar = Path().apply {
+                for (q in 0..24) {
+                    val angle = (2.0 * PI * q / 24).toFloat()
+                    val point = iso.p(outlet.x + 0.048f * cos(angle), outlet.y + 0.003f, outlet.z + 0.048f * sin(angle))
+                    if (q == 0) moveTo(point.x, point.y) else lineTo(point.x, point.y)
+                }
+                close()
+            }
+            drawPath(collar, Color(0xFF7F858C))
+            drawPath(collar, Color(0xFFE7E9EA), style = Stroke(lw * 0.6f))
+            val cable = Path().apply {
+                val start = iso.p(outlet.x, outlet.y + 9f, outlet.z)
+                val end = iso.p(outlet.x, outlet.y + 0.006f, outlet.z)
+                moveTo(start.x, start.y)
+                lineTo(end.x, end.y)
+            }
+            drawPath(cable, Color(0xFFA9ADB2), style = Stroke(3.2.dp.toPx(), cap = StrokeCap.Butt))
+            drawPath(cable, Color(0xFFE1E3E4), style = Stroke(2.25.dp.toPx(), cap = StrokeCap.Butt))
+            drawPath(cable, Color(0xFFF9F9F7), style = Stroke(0.65.dp.toPx(), cap = StrokeCap.Butt))
+
+        }
+        val latchZ = z1 + 0.06f
+        val latchHalf = half - 0.025f
+        for (hingeX in listOf(x - latchHalf, x + latchHalf)) {
+            drawLine(Color(0xFF8E949B), iso.p(hingeX, y - 0.015f, z1 - 0.045f),
+                iso.p(hingeX, y - 0.015f, latchZ), 0.036f * iso.s, cap = StrokeCap.Round)
+        }
+        val latch = roundedQuadPath(listOf(
+            iso.p(x - latchHalf, y - 0.025f, latchZ),
+            iso.p(x + latchHalf, y - 0.025f, latchZ),
+            iso.p(x + latchHalf, y + 0.50f, latchZ),
+            iso.p(x - latchHalf, y + 0.50f, latchZ)
+        ), 0.14f)
+        drawPath(latch, Color(0xFF858D96), style = Stroke(0.044f * iso.s, join = StrokeJoin.Round))
+        drawPath(latch, Color(0xFFDEE1E4), style = Stroke(0.027f * iso.s, join = StrokeJoin.Round))
+        for (hingeX in listOf(x - latchHalf, x + latchHalf)) {
+            drawPath(iso.floorCircle(hingeX, y - 0.015f, latchZ + 0.002f, 0.026f, 12), Color(0xFF858D96))
+        }
+        val led = iso.p(x + 0.25f * widthScale, y + 0.008f, z1 - 0.09f)
+        drawCircle(Color(0xFF8C97A4), 0.9.dp.toPx(), led)
+        }
+    }
+}
+
+private class RackPictureCache(private val scope: CoroutineScope) {
+    private var key: Any? = null
+    private var picture: android.graphics.Picture? = null
+    private var bitmap by mutableStateOf<ImageBitmap?>(null)
+    private var rasterJob: Job? = null
+
+    fun draw(drawScope: DrawScope, nextKey: Any, block: DrawScope.() -> Unit) {
+        if (key != nextKey) {
+            rasterJob?.cancel()
+            bitmap = null
+            val recording = android.graphics.Picture()
+            val width = drawScope.size.width.toInt().coerceAtLeast(1)
+            val height = drawScope.size.height.toInt().coerceAtLeast(1)
+            val canvas = recording.beginRecording(width, height)
+            try {
+                CanvasDrawScope().draw(drawScope, drawScope.layoutDirection, Canvas(canvas), drawScope.size, block)
+            } finally {
+                recording.endRecording()
+            }
+            picture = recording
+            key = nextKey
+            rasterJob = scope.launch {
+                delay(100)
+                val image = withContext(Dispatchers.Default) {
+                    android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888).apply {
+                        android.graphics.Canvas(this).drawPicture(recording)
+                    }.asImageBitmap()
+                }
+                if (key == nextKey) bitmap = image
+            }
+        }
+        val image = bitmap
+        if (image != null) with(drawScope) { drawImage(image) }
+        else drawScope.drawIntoCanvas { it.nativeCanvas.drawPicture(picture!!) }
+    }
+}
+
+private class RackReadoutCache {
+    private val values = LinkedHashMap<List<Any>, String>()
+
+    fun fit(measurer: TextMeasurer, text: String, size: Float, width: Float, scope: DrawScope): String {
+        val fontSize = with(scope) { size.toSp() }
+        val key = listOf(text, fontSize, width, scope.fontScale)
+        return values.getOrPut(key) {
+            if (values.size >= 64) values.clear()
+            val style = TextStyle(fontFamily = FontFamily.Monospace, fontSize = fontSize)
+            var value = text
+            while (value.isNotEmpty() && measurer.measure(value, style, softWrap = false).size.width > width) {
+                value = value.dropLast(1)
+            }
+            value
+        }
+    }
+}
+
+private fun DrawScope.drawOpticSignals(
+    iso: Iso, extension: FloatArray, cableExtension: FloatArray, entrance: FloatArray,
+    flowEnabled: BooleanArray, running: Boolean, t: Float
+) {
+    val midZ = (RackHardwareLayout.OPTIC_Z0 + RackHardwareLayout.OPTIC_Z1) * 0.5f
+    val widthScale = RackHardwareLayout.OPTIC_WIDTH / 0.66f
+    for (k in 0 until RackHardwareLayout.OPTIC_COUNT) {
+        if (entrance[k] <= 0f) continue
+        val depth = RackHardwareLayout.opticEntranceDepth(entrance[k])
+        withTransform({ translate(-depth * K * iso.s, depth * 0.5f * iso.s) }) {
+            if (flowEnabled[k]) {
+                for (strand in 0 until RackHardwareLayout.OPTIC_STRAND_COUNT) {
+                    val outlet = RackHardwareLayout.opticCableOutlet(k, extension[k], cableExtension[k], strand)
+                    val start = iso.p(outlet.x, outlet.y + 9f, midZ)
+                    val end = iso.p(outlet.x, outlet.y + 0.006f, midZ)
+                    for (pulse in 0 until 5) {
+                        val phase = (t * 0.60f + pulse / 5f + strand * 0.07f + k * 0.035f) % 1f
+                        val from = start + (end - start) * phase
+                        val to = start + (end - start) * min(phase + 0.065f, 1f)
+                        drawLine(Pal.orange.copy(alpha = 0.22f), from, to, 4.4.dp.toPx(), StrokeCap.Round)
+                        drawLine(Pal.orange.copy(alpha = 0.9f), from, to, 1.7.dp.toPx(), StrokeCap.Round)
+                        drawLine(Color.White.copy(alpha = 0.85f), from, to, 0.55.dp.toPx(), StrokeCap.Round)
+                    }
+                }
+            }
+            if (running && entrance[k] >= 1f && extension[k] < 0.1f && cableExtension[k] < 0.1f) {
+                val led = iso.p(RackHardwareLayout.opticX(k) + 0.25f * widthScale,
+                    RackHardwareLayout.opticFront(extension[k]) + 0.008f, RackHardwareLayout.OPTIC_Z1 - 0.09f)
+                drawCircle(Pal.orange.copy(alpha = 0.65f + 0.35f * sin(t * 2.8f + k)), 0.9.dp.toPx(), led)
+            }
+        }
+    }
+}
+
+private const val DRV_N = RackHardwareLayout.DRIVE_COUNT
+private const val DRV_X0 = RackHardwareLayout.DRIVE_X0
+private const val DRV_PITCH = RackHardwareLayout.DRIVE_PITCH
+private const val DRV_T = RackHardwareLayout.DRIVE_THICKNESS
+private const val DRV_Y0 = RackHardwareLayout.DRIVE_Y0
+private const val DRV_Y1 = RackHardwareLayout.DRIVE_Y1
+private const val DRV_H = RackHardwareLayout.DRIVE_HEIGHT
+private const val DRV_UP = RackHardwareLayout.DRIVE_TRAVEL
 private val CAD_TOP = Color(0xFFE4E6EA)
-private val CAD_FRONT = Color(0xFFCBCED5)
-private val CAD_SIDE = Color(0xFFB4B8C0)
+private val CAD_FRONT = Color(0xFFB8BDC5)
+private val CAD_SIDE = Color(0xFF929AA5)
 
 private fun drvX(k: Int) = DRV_X0 + k * DRV_PITCH
 private fun drvTop(e: Float) = RH - 0.04f + e * DRV_UP
@@ -984,29 +1255,91 @@ private fun DrawScope.topText(
     mat.values[Matrix.TranslateY] = o.y
     withTransform({ transform(mat) }) {
         drawText(
-            m, text, Offset.Zero,
-            TextStyle(
+            m.measure(text, TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = fs.toSp(),
-                color = color,
                 fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal
-            ),
-            softWrap = false, maxLines = 1
+            ), softWrap = false, maxLines = 1),
+            color = color, topLeft = Offset.Zero
         )
     }
 }
 
 private fun DrawScope.driveTopDeco(m: TextMeasurer, iso: Iso, k: Int, top: Float, on: Boolean, t: Float, lw: Float) {
-    val x0 = drvX(k); val x1 = x0 + DRV_T
-    topText(m, iso, "D${k + 1}", x0 + 0.1f, DRV_Y0 + 0.1f, top, 0.15f * iso.s, Pal.ink, true)
-    val ledOn = on && sin(t * 5f + k * 2.1f) > -0.2f
-    drawCircle(if (ledOn) Pal.orange else Color(0xFFB0B0B8), 2.dp.toPx(), iso.p(x0 + DRV_T / 2f, 1.45f, top))
-    for (q in 0 until 3) {
-        val y = 1.53f + q * 0.07f
-        drawLine(Pal.lineSoft, iso.p(x0 + 0.1f, y, top), iso.p(x1 - 0.1f, y, top), strokeWidth = lw)
+    val x0 = drvX(k)
+    val x1 = x0 + DRV_T
+    val xc = (x0 + x1) * 0.5f
+    fun plate(xa: Float, xb: Float, ya: Float, yb: Float, inset: Float = 0.035f) = roundedQuadPath(listOf(
+        iso.p(xa, ya, top + 0.004f), iso.p(xb, ya, top + 0.004f),
+        iso.p(xb, yb, top + 0.004f), iso.p(xa, yb, top + 0.004f)
+    ), inset)
+    val lid = plate(x0 + 0.025f, x1 - 0.025f, DRV_Y0 + 0.025f, DRV_Y1 - 0.025f)
+    drawPath(lid, Brush.linearGradient(listOf(Color(0xFFF0F1F3), Color(0xFFC8CED5), Color(0xFFE8EBEF)),
+        iso.p(x0, DRV_Y0, top), iso.p(x1, DRV_Y1, top)))
+    drawPath(lid, Color(0xFF9099A5), style = Stroke(lw * 0.85f))
+    drawPath(iso.floorCircle(xc, DRV_Y0 + 0.35f, top + 0.006f, 0.19f, 28), Color(0xFFD4DAE0))
+    drawPath(iso.floorCircle(xc, DRV_Y0 + 0.35f, top + 0.006f, 0.19f, 28), Color(0xFFAEB6C0), style = Stroke(lw * 0.8f))
+    val labelY = DRV_Y0 + 0.68f
+    drawPath(plate(x0 + 0.075f, x1 - 0.075f, labelY, DRV_Y1 - 0.33f), Color(0xFFFCFCFB))
+    drawPath(plate(x0 + 0.075f, x1 - 0.075f, labelY, labelY + 0.21f, 0f), Color(0xFF444B55))
+    topText(m, iso, "D${k + 1}", x0 + 0.14f, labelY + 0.04f, top + 0.01f, 0.14f * iso.s, Color.White, true)
+    topText(m, iso, "HDD", x0 + 0.12f, labelY + 0.35f, top + 0.01f, 0.115f * iso.s, Pal.ink, true)
+    topText(m, iso, "8TB", x0 + 0.12f, labelY + 0.57f, top + 0.01f, 0.11f * iso.s, Pal.mute)
+    for (q in 0 until 11) {
+        val y = labelY + 0.86f + q * 0.025f
+        drawLine(Color(0xFF5D6570), iso.p(x0 + 0.12f, y, top + 0.009f),
+            iso.p(x1 - if (q % 3 == 0) 0.15f else 0.10f, y, top + 0.009f), lw * if (q % 3 == 0) 1.1f else 0.55f)
     }
-    val latch = quad(iso.p(x0 + 0.08f, 1.72f, top), iso.p(x1 - 0.08f, 1.72f, top), iso.p(x1 - 0.08f, 1.88f, top), iso.p(x0 + 0.08f, 1.88f, top))
-    drawPath(latch, if (on) Pal.orange.copy(alpha = 0.9f) else Color(0xFF92969D)); drawPath(latch, if (on) Pal.orangeDeep else Pal.line, style = Stroke(lw))
+    for (x in listOf(x0 + 0.065f, x1 - 0.065f)) {
+        for (y in listOf(DRV_Y0 + 0.09f, DRV_Y1 - 0.11f)) {
+            drawPath(iso.floorCircle(x, y, top + 0.01f, 0.027f, 12), Color(0xFF8E98A4))
+        }
+    }
+    val latch = plate(x0 + 0.09f, x1 - 0.09f, DRV_Y1 - 0.22f, DRV_Y1 - 0.07f, 0.08f)
+    drawPath(latch, if (on) Pal.orange else Color(0xFFA5ADB7))
+    drawPath(latch, Pal.line, style = Stroke(lw * 0.7f))
+}
+
+private fun DrawScope.drawDriveBody(iso: Iso, k: Int, bottom: Float, top: Float, fullTop: Float, lw: Float, showTop: Boolean = true) {
+    val x0 = drvX(k)
+    val x1 = x0 + DRV_T
+    box(iso, x0, x1, DRV_Y0, DRV_Y1, bottom, top, CAD_TOP, CAD_FRONT, CAD_SIDE, lw, showTop)
+    val bodySide = quad(iso.p(x1, DRV_Y0, bottom), iso.p(x1, DRV_Y1, bottom),
+        iso.p(x1, DRV_Y1, top), iso.p(x1, DRV_Y0, top))
+    clipPath(bodySide) {
+        fun cover(ya: Float, yb: Float, za: Float, zb: Float) = roundedQuadPath(listOf(
+            iso.p(x1, ya, zb), iso.p(x1, yb, zb), iso.p(x1, yb, za), iso.p(x1, ya, za)
+        ), 0.055f)
+        val base = fullTop - DRV_H
+        drawPath(cover(DRV_Y0 + 0.025f, DRV_Y1 - 0.025f, base + 0.03f, fullTop - 0.025f), Color(0xFFD4D9DF))
+        drawPath(cover(DRV_Y0 + 0.07f, DRV_Y1 - 0.07f, base + 0.09f, fullTop - 0.07f),
+            Color(0xFF949EA9), style = Stroke(lw))
+        drawPath(cover(DRV_Y0 + 0.14f, DRV_Y0 + 0.65f, base + 0.22f, fullTop - 0.16f), Color(0xFFF8F8F5))
+        for (q in 0 until 8) {
+            val y = DRV_Y0 + 0.20f + q * 0.046f
+            drawLine(Color(0xFF616C78), iso.p(x1, y, base + 0.33f), iso.p(x1, y, fullTop - 0.28f),
+                lw * if (q % 3 == 0) 1.3f else 0.65f)
+        }
+        drawPath(cover(DRV_Y0, DRV_Y1, base, base + 0.075f), Color(0xFF434D58))
+        for (y in listOf(DRV_Y0 + 0.10f, DRV_Y1 - 0.10f)) {
+            for (z in listOf(base + 0.14f, fullTop - 0.13f)) {
+                val center = iso.p(x1, y, z)
+                drawCircle(Color(0xFF7C8793), 1.1.dp.toPx(), center)
+                drawCircle(Color(0xFFE5E8EC), 0.45.dp.toPx(), center)
+            }
+        }
+    }
+    val front = quad(iso.p(x0, DRV_Y1, bottom), iso.p(x1, DRV_Y1, bottom),
+        iso.p(x1, DRV_Y1, top), iso.p(x0, DRV_Y1, top))
+    clipPath(front) {
+        drawLine(Color(0xFFE7EBEF), iso.p(x0 + 0.075f, DRV_Y1, bottom), iso.p(x0 + 0.075f, DRV_Y1, top), lw * 1.5f)
+        drawLine(Color(0xFF939EAA), iso.p(x1 - 0.075f, DRV_Y1, bottom), iso.p(x1 - 0.075f, DRV_Y1, top), lw)
+        for (z in listOf(fullTop - 0.28f, fullTop - DRV_H + 0.22f)) {
+            drawPath(iso.frontCircle((x0 + x1) * 0.5f, z, 0.042f).apply {
+                translate(iso.p(0f, DRV_Y1, 0f) - iso.p(0f, RD, 0f))
+            }, Color(0xFF8995A2))
+        }
+    }
 }
 
 /** Drive bodies below the rim, drawn inside the clipped cavity. */
@@ -1014,7 +1347,7 @@ private fun DrawScope.drawDrivesBelow(m: TextMeasurer, iso: Iso, e: FloatArray, 
     for (k in 0 until DRV_N) {
         val top = drvTop(e[k]); val x0 = drvX(k)
         val flush = top <= RH
-        box(iso, x0, x0 + DRV_T, DRV_Y0, DRV_Y1, top - DRV_H, min(top, RH), CAD_TOP, CAD_FRONT, CAD_SIDE, lw, showTop = flush)
+        drawDriveBody(iso, k, top - DRV_H, min(top, RH), top, lw, showTop = flush)
         if (flush) driveTopDeco(m, iso, k, top, running, t, lw)
     }
 }
@@ -1024,7 +1357,7 @@ private fun DrawScope.drawDrivesAbove(m: TextMeasurer, iso: Iso, e: FloatArray, 
     val order = (0 until DRV_N).filter { drvTop(e[it]) > RH + 0.004f }.sortedBy { drvX(it) + e[it] }
     for (k in order) {
         val top = drvTop(e[k]); val x0 = drvX(k); val x1 = x0 + DRV_T
-        box(iso, x0, x1, DRV_Y0, DRV_Y1, RH, top, CAD_TOP, CAD_FRONT, CAD_SIDE, lw)
+        drawDriveBody(iso, k, RH, top, top, lw)
         driveTopDeco(m, iso, k, top, running, t, lw)
         val side = quad(iso.p(x1, DRV_Y0, RH), iso.p(x1, DRV_Y1, RH), iso.p(x1, DRV_Y1, top), iso.p(x1, DRV_Y0, top))
         clipPath(side) {
@@ -1107,14 +1440,28 @@ fun RackScene(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val measurer = rememberTextMeasurer()
+    val measurer = rememberTextMeasurer(cacheSize = 192)
+    val cacheScope = rememberCoroutineScope()
+    val shellPicture = remember { RackPictureCache(cacheScope) }
+    val opticsPicture = remember { RackPictureCache(cacheScope) }
+    val readoutCache = remember { RackReadoutCache() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var powerStage by remember { mutableStateOf(RackPowerStage.OFF) }
+    var enabledBays by remember { mutableIntStateOf(0) }
+    val powerStageNow by rememberUpdatedState(powerStage)
     val onSelectNow by rememberUpdatedState(onSelect)
     val onPowerNow by rememberUpdatedState(onPower)
     var fanSpeed by remember { mutableFloatStateOf(0f) }
-    val glowOn = animateFloatAsState(if (running) 1f else 0f, tween(900), label = "glow")
-    val receiverA = animateFloatAsState(if (running) 1f else 0f,
-        tween(if (running) 1450 else 500), label = "receiver")
-    val litA = List(BAY_COUNT) { animateFloatAsState(if (running && lit[it]) 1f else 0f, tween(600), label = "lit$it") }
+    val powerOn = animateFloatAsState(if (running) 1f else 0f, tween(200), label = "power")
+    val glowOn = animateFloatAsState(if (running && powerStage.includes(RackPowerStage.BASE)) 1f else 0f, tween(320), label = "glow")
+    val topOn = animateFloatAsState(if (running && powerStage.includes(RackPowerStage.TOP)) 1f else 0f, tween(300), label = "top")
+    val cableOn = animateFloatAsState(if (running && powerStage.includes(RackPowerStage.CABLES)) 1f else 0f, tween(380), label = "cables")
+    val receiverPowered = powerStage.includes(RackPowerStage.RECEIVER) && running
+    val receiverA = animateFloatAsState(if (receiverPowered) 1f else 0f,
+        tween(if (receiverPowered) RackStartupTiming.RECEIVER_MILLIS else 500), label = "receiver")
+    val litA = List(BAY_COUNT) {
+        animateFloatAsState(if (running && it < enabledBays && lit[it]) 1f else 0f, tween(240), label = "lit$it")
+    }
     val busyNow by rememberUpdatedState(busy)
     val runningNow by rememberUpdatedState(running)
     val popTarget = remember { mutableStateListOf(*Array(BAY_COUNT) { false }) }
@@ -1125,6 +1472,24 @@ fun RackScene(
     var lidOut by remember { mutableStateOf(false) }
     val liftA = animateFloatAsState(if (liftOut) 1f else 0f, spring(0.8f, Spring.StiffnessLow), label = "lift")
     val lidA = animateFloatAsState(if (lidOut) 1f else 0f, spring(0.75f, Spring.StiffnessLow), label = "lid")
+    val opticTarget = remember { mutableStateListOf(*Array(RackHardwareLayout.OPTIC_COUNT) { OpticState.CONNECTED }) }
+    val opticEntrance = remember { List(RackHardwareLayout.OPTIC_COUNT) { Animatable(0f) } }
+    val powerSequence = remember {
+        RackPowerSequence(
+            entrance = { opticEntrance[it].value },
+            resetOptic = { opticTarget[it] = OpticState.CONNECTED },
+            animateOptic = { index, target, duration -> opticEntrance[index].animateTo(target, tween(duration)) },
+            stage = { powerStage = it },
+            bays = { enabledBays = it }
+        )
+    }
+    LaunchedEffect(running) { powerSequence.play(running) }
+    val opticA = List(RackHardwareLayout.OPTIC_COUNT) {
+        animateFloatAsState(opticTarget[it].moduleExtension, spring(0.78f, Spring.StiffnessMediumLow), label = "optic$it")
+    }
+    val opticCableA = List(RackHardwareLayout.OPTIC_COUNT) {
+        animateFloatAsState(opticTarget[it].cableExtension, spring(0.82f, Spring.StiffnessMediumLow), label = "opticCable$it")
+    }
     val driveTarget = remember { mutableStateListOf(*Array(DRV_N) { false }) }
     val driveA = List(DRV_N) {
         animateFloatAsState(if (driveTarget[it]) 1f else 0f, spring(0.55f, Spring.StiffnessMedium), label = "drv$it")
@@ -1135,7 +1500,6 @@ fun RackScene(
     val fanAng = remember { mutableStateListOf(0f, 20f, 40f, 0f) }
     val fanHeld = remember { BooleanArray(FAN_N) }
     val fanKick = remember { FloatArray(FAN_N) }
-    var bootT by remember { mutableFloatStateOf(0f) }
     var aiRunT by remember { mutableFloatStateOf(0f) }
     var aiOffT by remember { mutableFloatStateOf(RackPowerVisuals.SHUTDOWN_SECONDS) }
     val bump = remember { Animatable(0f) }
@@ -1151,42 +1515,47 @@ fun RackScene(
 
     var t by remember { mutableFloatStateOf(0f) }
     var flow by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(Unit) {
-        var last = 0L
-        var wasPowered = false
-        while (true) {
-            withFrameNanos { n ->
-                if (last != 0L) {
-                    val dt = ((n - last) / 1e9f).coerceAtMost(0.05f)
-                    val online = runningNow
-                    val aiShouldRun = online && liftA.value < 0.5f
-                    val fansMayRun = aiShouldRun
-                    if (online) t += dt
-                    fanSpeed = RackPowerVisuals.advanceFanSpeed(fanSpeed, fansMayRun, dt)
-                    for (k in 0 until FAN_N) {
-                        if (!fansMayRun) fanKick[k] = 0f
-                        if (!fanHeld[k]) {
-                            fanAng[k] = (fanAng[k] + dt * (600f * fanSpeed * (1f - liftA.value) + fanKick[k])) % 360f
-                            fanKick[k] *= exp(-2.5f * dt)
-                        }
-                    }
-                    if (online) flow += dt * (0.22f + 0.55f * glowOn.value)
-                    if (aiShouldRun) {
-                        if (!wasPowered) {
-                            bootT = 0f
-                            aiRunT = 0f
-                        }
-                        bootT += dt
-                        aiRunT += dt
-                        aiOffT = 0f
-                    } else {
-                        bootT = 0f
-                        aiOffT = (aiOffT + dt).coerceAtMost(RackPowerVisuals.SHUTDOWN_SECONDS)
-                        if (aiOffT >= RackPowerVisuals.SHUTDOWN_SECONDS) aiRunT = 0f
-                    }
-                    wasPowered = aiShouldRun
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var last = 0L
+            var wasPowered = false
+            while (true) {
+                val needsFrames = runningNow || fanSpeed > 0f ||
+                    aiOffT < RackPowerVisuals.SHUTDOWN_SECONDS || fanKick.any { abs(it) > 0.1f }
+                if (!needsFrames) {
+                    last = 0L
+                    snapshotFlow { runningNow }.first { it }
                 }
-                last = n
+                withFrameNanos { n ->
+                    if (last != 0L) {
+                        val dt = ((n - last) / 1e9f).coerceIn(0f, 0.25f)
+                        val online = runningNow
+                        val stage = powerStageNow
+                        val aiShouldRun = online && stage.includes(RackPowerStage.AI) && liftA.value < 0.5f
+                        val fansMayRun = online && stage.includes(RackPowerStage.FANS) && liftA.value < 0.5f
+                        if (online) t += dt
+                        fanSpeed = RackPowerVisuals.advanceFanSpeed(fanSpeed, fansMayRun, dt)
+                        for (k in 0 until FAN_N) {
+                            if (!fansMayRun) fanKick[k] = 0f
+                            if (!fanHeld[k]) {
+                                val velocity = 600f * fanSpeed * (1f - liftA.value) + fanKick[k]
+                                if (abs(velocity) > 0.01f) fanAng[k] = (fanAng[k] + dt * velocity) % 360f
+                                fanKick[k] *= exp(-2.5f * dt)
+                            }
+                        }
+                        if (online && stage.includes(RackPowerStage.BAYS)) flow += dt * (0.22f + 0.55f * glowOn.value)
+                        if (aiShouldRun) {
+                            if (!wasPowered) aiRunT = 0f
+                            aiRunT += dt
+                            aiOffT = 0f
+                        } else {
+                            aiOffT = (aiOffT + dt).coerceAtMost(RackPowerVisuals.SHUTDOWN_SECONDS)
+                            if (aiOffT >= RackPowerVisuals.SHUTDOWN_SECONDS) aiRunT = 0f
+                        }
+                        wasPowered = aiShouldRun
+                    }
+                    last = n
+                }
             }
         }
     }
@@ -1195,6 +1564,11 @@ fun RackScene(
         modifier.pointerInput(Unit) {
             detectTapGestures { oBase ->
                 val iso = isoFor(size.width.toFloat(), size.height.toFloat(), 1.5f * liftA.value + 1.9f * lidA.value)
+                val optic = if (runningNow) opticHit(iso, oBase,
+                    FloatArray(RackHardwareLayout.OPTIC_COUNT) { opticA[it].value },
+                    FloatArray(RackHardwareLayout.OPTIC_COUNT) { opticCableA[it].value },
+                    FloatArray(RackHardwareLayout.OPTIC_COUNT) { opticEntrance[it].value }) else -1
+                if (optic >= 0) { opticTarget[optic] = opticTarget[optic].next(); return@detectTapGestures }
                 val o = Offset(oBase.x, oBase.y + LIFT_H * liftA.value.coerceIn(0f, 1f) * Z_SCALE * iso.s)
                 val md = AiModuleLayout.extension(macA.value)
                 val moduleFrame = AiModuleLayout.frame
@@ -1250,7 +1624,7 @@ fun RackScene(
                 val (sx, sy) = iso.unprojZ(oBase, RZ0)
                 val topHit = sx in -0.8f..(RW + 0.8f) && sy in -0.8f..(RD + 0.8f) && (liftA.value > 0.5f || sy >= RD)
                 val (fx2, fz2) = iso.unprojY(oBase, RD + 0.8f)
-                val frontHit = fx2 in -0.8f..(RW + 0.8f) && fz2 in 0f..RZ0
+                val frontHit = fx2 in -0.8f..(RW + 0.8f) && fz2 in RackHardwareLayout.BASE_BOTTOM..RZ0
                 if (topHit || frontHit) liftOut = !liftOut
             }
         }.pointerInput(Unit) {
@@ -1306,11 +1680,16 @@ fun RackScene(
         val lw = 0.7.dp.toPx()
         val dead = 1f - liftA.value.coerceIn(0f, 1f)
         val glow = glowOn.value * dead
-        val live = running && dead > 0.5f
+        val live = running && powerStage.includes(RackPowerStage.BAYS) && dead > 0.5f
+        val aiLive = running && powerStage.includes(RackPowerStage.AI) && dead > 0.5f
+        val dataLive = running && powerStage.includes(RackPowerStage.DATA) && dead > 0.5f
+        val topGlow = topOn.value * dead
+        val cableGlow = cableOn.value * dead
+        val powerGlow = powerOn.value * dead
         val breath = 0.75f + 0.25f * sin(t * 2.2f)
         // 脉冲光条：2s 周期正弦呼吸，alpha 0.35~1.0，phase 错开形成扫动
         fun pulse(phase: Float = 0f) = 0.675f + 0.325f * sin(t * 3.1416f + phase)
-        val fan = fanSpeed * glow
+        val fan = fanSpeed * dead
         val liftPx = LIFT_H * liftA.value.coerceIn(0f, 1f) * Z_SCALE * s
 
         fun face(path: Path, fill: Color) {
@@ -1338,8 +1717,8 @@ fun RackScene(
 
         // base slab
         val bx0 = -0.8f; val bx1 = RW + 0.8f; val by0 = -0.8f; val by1 = RD + 0.8f; val bz = RZ0
-        face(quad(iso.p(bx0, by1, 0f), iso.p(bx1, by1, 0f), iso.p(bx1, by1, bz), iso.p(bx0, by1, bz)), Pal.front)
-        face(quad(iso.p(bx1, by0, 0f), iso.p(bx1, by1, 0f), iso.p(bx1, by1, bz), iso.p(bx1, by0, bz)), Pal.side)
+        face(quad(iso.p(bx0, by1, RackHardwareLayout.BASE_BOTTOM), iso.p(bx1, by1, RackHardwareLayout.BASE_BOTTOM), iso.p(bx1, by1, bz), iso.p(bx0, by1, bz)), Pal.front)
+        face(quad(iso.p(bx1, by0, RackHardwareLayout.BASE_BOTTOM), iso.p(bx1, by1, RackHardwareLayout.BASE_BOTTOM), iso.p(bx1, by1, bz), iso.p(bx1, by0, bz)), Pal.side)
         face(quad(iso.p(bx0, by0, bz), iso.p(bx1, by0, bz), iso.p(bx1, by1, bz), iso.p(bx0, by1, bz)), Pal.top)
         fun baseRail(x0: Float, y0: Float, x1: Float, y1: Float) {
             val start = iso.p(x0, y0, bz + 0.008f)
@@ -1355,6 +1734,20 @@ fun RackScene(
             drawPath(c, Pal.lineSoft)
             drawPath(c, Pal.line, style = Stroke(lw))
         }
+
+        val opticExtension = FloatArray(RackHardwareLayout.OPTIC_COUNT) { opticA[it].value }
+        val opticCableExtension = FloatArray(RackHardwareLayout.OPTIC_COUNT) { opticCableA[it].value }
+        val entrances = FloatArray(RackHardwareLayout.OPTIC_COUNT) { opticEntrance[it].value }
+        val opticKey = listOf(iso.s, iso.cx, iso.cy, lw, fontScale) +
+            opticExtension.toList() + opticCableExtension.toList() + entrances.toList()
+        opticsPicture.draw(this, opticKey) {
+            drawOptics(measurer, iso, opticExtension, opticCableExtension, entrances, lw)
+        }
+        drawOpticSignals(iso, opticExtension, opticCableExtension, entrances,
+            BooleanArray(RackHardwareLayout.OPTIC_COUNT) {
+                RackHardwareLayout.opticFlowEnabled(running && powerStage.includes(RackPowerStage.CABLES),
+                    opticTarget[it], entrances[it], opticExtension[it], opticCableExtension[it])
+            }, running, t)
 
         // power cable behind the rack, laid on the floor and leaving the screen
         run {
@@ -1374,9 +1767,9 @@ fun RackScene(
             drawPath(shadow, Color.Black.copy(alpha = 0.10f), style = Stroke(10.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
             drawPath(cable, Pal.line, style = Stroke(10.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
             drawPath(cable, Color(0xFFE4E4E9), style = Stroke(7.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawPath(cable, lerp(Pal.lineSoft, Pal.orange, glow), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+            drawPath(cable, lerp(Pal.lineSoft, Pal.orange, cableGlow), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
             // 数据脉冲：4 个短光段（约路径 5%）沿电缆快速循环流动，~1 秒一圈
-            if (glow > 0.02f) {
+            if (cableGlow > 0.02f) {
                 val pm2 = PathMeasure()
                 pm2.setPath(cable, false)
                 val len = pm2.length
@@ -1393,13 +1786,13 @@ fun RackScene(
                         if (!started) { segPath.moveTo(pos.x, pos.y); started = true } else segPath.lineTo(pos.x, pos.y)
                     }
                     if (!started) continue
-                    drawPath(segPath, Pal.orange.copy(alpha = 0.22f * glow), style = Stroke(9.dp.toPx(), cap = StrokeCap.Round))
-                    drawPath(segPath, Pal.orange.copy(alpha = 0.85f * glow), style = Stroke(3.5.dp.toPx(), cap = StrokeCap.Round))
-                    drawPath(segPath, Color.White.copy(alpha = 0.7f * glow), style = Stroke(1.4.dp.toPx(), cap = StrokeCap.Round))
+                    drawPath(segPath, Pal.orange.copy(alpha = 0.22f * cableGlow), style = Stroke(9.dp.toPx(), cap = StrokeCap.Round))
+                    drawPath(segPath, Pal.orange.copy(alpha = 0.85f * cableGlow), style = Stroke(3.5.dp.toPx(), cap = StrokeCap.Round))
+                    drawPath(segPath, Color.White.copy(alpha = 0.7f * cableGlow), style = Stroke(1.4.dp.toPx(), cap = StrokeCap.Round))
                     val head = pm2.getPosition(u * len)
                     drawCircle(
                         Brush.radialGradient(
-                            listOf(Pal.orange.copy(alpha = 0.35f * glow), Color.Transparent),
+                            listOf(Pal.orange.copy(alpha = 0.35f * cableGlow), Color.Transparent),
                             center = head, radius = 9.dp.toPx()
                         ), radius = 9.dp.toPx(), center = head
                     )
@@ -1412,17 +1805,13 @@ fun RackScene(
         withTransform({ translate(0f, -liftPx) }) {
         // rack body
         val frontPath = iso.frontQuad(0f, RZ0, RW - RackLayout.SHELL_RADIUS, RH - RackLayout.SHELL_RADIUS)
-        drawCabinetShell(iso, lw)
+        shellPicture.draw(this, listOf(iso.s, iso.cx, iso.cy, lw)) { drawCabinetShell(iso, lw) }
         drawLine(Color.White, iso.f(0.11f, RZ0 + 0.15f), iso.f(0.11f, RH - 0.14f), 2.dp.toPx())
         drawLine(Pal.lineSoft, iso.f(0.29f, RZ0 + 0.18f), iso.f(0.29f, RH - 0.16f), lw)
         for (k in 0 until 36) {
             val z = RZ0 + 0.28f + k * 0.18f
             val warm = k % 6 == 0
             drawCircle(if (warm && live) Pal.orange.copy(alpha = 0.8f) else Pal.line, (if (warm) 0.9f else 0.65f).dp.toPx(), iso.f(0.2f, z))
-        }
-        for (z in listOf(RZ0 + 0.14f, RH - 0.12f)) {
-            drawCircle(Color.White, 3.1.dp.toPx(), iso.f(0.32f, z))
-            drawCircle(Pal.line, 1.5.dp.toPx(), iso.f(0.32f, z))
         }
 
         drawLine(lerp(Pal.lineSoft, Pal.orange, glow), iso.f(RW - 0.24f, RH - 0.6f), iso.f(RW - 0.24f, RH - 1.05f), lw * 1.8f, cap = StrokeCap.Round)
@@ -1452,10 +1841,10 @@ fun RackScene(
             drawPath(sideQuad(displayY0 - 0.06f, displayY1 + 0.06f, bottom - 0.05f, top + 0.05f), Color.White)
             drawPath(sideQuad(displayY0 - 0.06f, displayY1 + 0.06f, bottom - 0.05f, top + 0.05f), Pal.line, style = Stroke(lw * 0.8f))
             drawPath(sideQuad(displayY0, displayY1, bottom, top), Brush.linearGradient(listOf(Color(0xFF353535), Color(0xFF232426)), iso.p(RW, displayY1, top), iso.p(RW, displayY0, bottom)))
-            if (live) sideText(measurer, iso, label, displayY1 - 0.1f, top - 0.22f, 0.19f * s, Pal.orange)
+            if (dataLive) sideText(measurer, iso, label, displayY1 - 0.1f, top - 0.22f, 0.19f * s, Pal.orange)
             val cell = min(0.088f, 1.24f / glyphCols(value))
             val digits = iso.pixelPath(value, displayY1 - 0.12f, top - 0.5f, cell)
-            if (live) drawPath(digits, Pal.orange.copy(alpha = 0.86f + 0.1f * sin(t * 1.8f)))
+            if (dataLive) drawPath(digits, Pal.orange.copy(alpha = 0.86f + 0.1f * sin(t * 1.8f)))
             drawCircle(Color(0xFF525456), 1.3.dp.toPx(), iso.p(RW, displayY0 + 0.1f, top - 0.12f))
         }
         fun ventBank(top: Float, count: Int) {
@@ -1483,7 +1872,7 @@ fun RackScene(
             moveTo(a.x, a.y); lineTo(b.x, b.y); lineTo(c.x, c.y); close()
         }
         drawPath(serviceMark, Pal.line, style = Stroke(lw))
-        drawAiModule(iso, macA.value, live, aiRunT, aiOffT, lw)
+        drawAiModule(iso, macA.value, aiLive, aiRunT, aiOffT, lw)
 
         // top deck: hinged lid carrying the fans, cavity + antennas underneath
         val la = lidA.value.coerceIn(0f, 1f)
@@ -1510,11 +1899,11 @@ fun RackScene(
             ), 0.04f)
             drawPath(topPanel, Color(0xFFF5F5F6))
             drawPath(topPanel, Pal.lineSoft, style = Stroke(lw))
-            drawTopIo(measurer, li, glow, live, lw)
+            drawTopIo(measurer, li, topGlow, topGlow > 0.01f, lw)
         }
         drawFanTray(li, fy, RH + if (under) 0f else 0.018f, lw)
-        for ((k, fx) in listOf(1.15f, RW / 2f, RW - 1.15f).withIndex()) drawFan(li, fx, fy, RH + if (under) 0f else 0.025f, 1f, fanAng[k], fan, glow, lw)
-        if (!under) drawReceiver(measurer, li, receiverA.value, running, lw)
+        for ((k, fx) in listOf(1.15f, RW / 2f, RW - 1.15f).withIndex()) drawFan(li, fx, fy, RH + if (under) 0f else 0.025f, 1f, fanAng[k], fan, topGlow, lw)
+        if (!under) drawReceiver(measurer, li, receiverA.value, running && powerStage.includes(RackPowerStage.RECEIVER), lw)
         if (la > 0.01f) drawDrivesAbove(measurer, iso, driveE, live, t, lw)
 
         // bay light spill on front face
@@ -1545,7 +1934,7 @@ fun RackScene(
         val hp = iso.frontQuad(BX0, hz0, BX1, hz1)
         drawPath(hp, Brush.linearGradient(listOf(lerp(Color(0xFFE9EAEC), Color(0xFFFFE0C0), glow), lerp(Color(0xFFF6F6F6), Color(0xFFFFF7F0), glow)), iso.f(BX0, RH), iso.f(BX1, hz0)))
         drawPath(hp, Pal.orange.copy(alpha = 0.82f), style = Stroke(1.25.dp.toPx()))
-        val up = if (live) lit.count { it } else 0
+        val up = if (live) lit.indices.count { it < enabledBays && lit[it] } else 0
         planeText(measurer, iso, "UP  $up/$BAY_COUNT", 2.0f, RH - 0.5f, 0.32f * s, lerp(Pal.mute, Pal.orangeDeep, glow))
         planeText(measurer, iso, "LOAD", 2.0f, RH - 0.99f, 0.18f * s, Pal.mute)
         drawLine(Pal.orange.copy(alpha = 0.28f), iso.f(1.92f, RH - 1.31f), iso.f(5.25f, RH - 1.31f), lw * 0.65f)
@@ -1565,10 +1954,10 @@ fun RackScene(
         run {
             val pz = pwrZ()
             val pc = iso.f(PWR_X, pz)
-            if (glow > 0.01f) {
+            if (powerGlow > 0.01f) {
                 drawCircle(
                     Brush.radialGradient(
-                        listOf(Pal.orange.copy(alpha = 0.45f * glow * breath), Color.Transparent),
+                        listOf(Pal.orange.copy(alpha = 0.45f * powerGlow * breath), Color.Transparent),
                         center = pc, radius = 1.4f * s
                     ), radius = 1.4f * s, center = pc
                 )
@@ -1576,9 +1965,9 @@ fun RackScene(
             drawPath(iso.frontCircle(PWR_X, pz, PWR_R, 28), Color(0xFF3A3A40))
             val capR = PWR_R * 0.82f
             val cap = iso.frontCircle(PWR_X, pz, capR, 28)
-            drawPath(cap, lerp(Color(0xFF66676C), Color(0xFFFF9B4A), glow))
-            drawPath(cap, lerp(Color(0xFF85868C), Color(0xFFFFC48D), glow), style = Stroke(1.5.dp.toPx()))
-            val ic = lerp(Color(0xFFB2B3B9), Color.White, glow)
+            drawPath(cap, lerp(Color(0xFF66676C), Color(0xFFFF9B4A), powerGlow))
+            drawPath(cap, lerp(Color(0xFF85868C), Color(0xFFFFC48D), powerGlow), style = Stroke(1.5.dp.toPx()))
+            val ic = lerp(Color(0xFFB2B3B9), Color.White, powerGlow)
             val arc = Path()
             for (k in 0..24) {
                 val ang = Math.toRadians(125.0 + k * (290.0 / 24)).toFloat()
@@ -1624,12 +2013,8 @@ fun RackScene(
 
                 planeText(measurer, iso, "0${i + 1} ${BAY_CODES[i]}", 1.02f, zm, 0.25f * s, if (sel) Pal.orangeDeep else Pal.ink)
                 clipPath(iso.frontQuad(2.96f, z0 + 0.04f, 4.22f, z1 - 0.04f)) {
-                    val labelStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = (0.22f * s).toSp())
-                    var value = readouts[i]
-                    while (value.isNotEmpty() && measurer.measure(value, labelStyle, softWrap = false).size.width > 1.1f * s) {
-                        value = value.dropLast(1)
-                    }
-                    planeText(measurer, iso, value, 3.02f, zm, 0.22f * s, if (live && lit[i]) Pal.orangeDeep else Pal.mute)
+                    val value = readoutCache.fit(measurer, readouts[i], 0.22f * s, 1.1f * s, this)
+                    planeText(measurer, iso, value, 3.02f, zm, 0.22f * s, if (a > 0.01f) Pal.orangeDeep else Pal.mute)
                 }
 
                 if (i == 3) {

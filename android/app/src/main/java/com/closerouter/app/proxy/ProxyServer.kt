@@ -16,7 +16,10 @@ import java.io.BufferedInputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.ServerSocket
+import java.net.BindException
+import java.net.InetSocketAddress
 import java.net.Socket
+import java.io.IOException
 
 /**
  * CloseRouter 转发核心：绑定 0.0.0.0:port（USB 走 adb forward，局域网电脑直连手机 IP），
@@ -36,18 +39,36 @@ object ProxyServer {
     var onPortChanged: (Int) -> Unit = {}
 
     val running = MutableStateFlow(false)
+    val startError = MutableStateFlow<String?>(null)
 
     private var server: ServerSocket? = null
     private var job: kotlinx.coroutines.Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Synchronized
-    fun start(newPort: Int = port) {
-        if (server != null && port == newPort) return
+    fun start(newPort: Int = port): Boolean {
+        if (server != null && port == newPort) return true
         stop()
+        startError.value = null
         port = newPort
         onPortChanged(newPort)
-        job = scope.launch { serve() }
+        val ss = ServerSocket()
+        try {
+            ss.reuseAddress = true
+            ss.bind(InetSocketAddress("0.0.0.0", newPort), 50)
+        } catch (error: IOException) {
+            runCatching { ss.close() }
+            startError.value = if (error is BindException) {
+                "转发端口 $newPort 已被占用，请到「端点」页修改转发端口后重试。转发服务未启动。"
+            } else {
+                "无法开启转发端口 $newPort：${error.message ?: "监听失败"}。转发服务未启动。"
+            }
+            return false
+        }
+        server = ss
+        running.value = true
+        job = scope.launch { serve(ss) }
+        return true
     }
 
     @Synchronized
@@ -64,23 +85,25 @@ object ProxyServer {
         if (newPort == port) return
         val wasRunning = server != null
         port = newPort
+        startError.value = null
         onPortChanged(newPort)
         if (wasRunning) { stop(); start(newPort) }
     }
 
-    private suspend fun serve() = withContext(Dispatchers.IO) {
-        val ss = ServerSocket(port, 50, java.net.InetAddress.getByName("0.0.0.0"))
-        server = ss
-        running.value = true
+    private suspend fun serve(ss: ServerSocket) = withContext(Dispatchers.IO) {
         try {
             while (isActive) {
                 val sock = runCatching { ss.accept() }.getOrNull() ?: break
                 scope.launch { runCatching { handle(sock) } }
             }
         } finally {
-            running.value = false
-            runCatching { ss.close() }
-            if (server === ss) server = null
+            synchronized(this@ProxyServer) {
+                runCatching { ss.close() }
+                if (server === ss) {
+                    server = null
+                    running.value = false
+                }
+            }
         }
     }
 

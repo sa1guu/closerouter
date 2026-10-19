@@ -7,18 +7,20 @@
 *Turn your phone into an LLM API router. Preset providers on the phone, plug in USB (or share LAN), and any OpenAI/Anthropic-compatible tool on the PC gets working endpoints — all traffic goes through the phone's network.*
 
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com)
-[![Version](https://img.shields.io/badge/version-1.0.33-E8741C)](../../releases)
+[![Version](https://img.shields.io/badge/version-1.0.45-E8741C)](../../releases)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## 特性
 
 - **三种端点满血透传**：`/v1/chat/completions`、`/v1/responses`、`/v1/messages`，原始请求体 + SSE 流式逐块转发——客户端填**任意密钥、任意模型名**，路由器自动注入真实凭据
-- **双通道**：USB（adb forward → 电脑 `127.0.0.1`）/ 局域网（同网设备直连手机 IP），**端口自定义**
+- **双通道**：USB（adb forward → 电脑 `127.0.0.1`）/ 局域网（同网设备直连手机 IP），**端口自定义**；端口被占用时明确提示修改端口并停止启动，不会误报“转发中”
+- **分阶段开关机**：电源按钮 → 六个光模块逐个插入 → 底座灯 → USB 接收器 → 风扇与顶部面板 → 七层单元逐个点亮 → A\ 屏启动 → 数据屏 → 后部电缆流光；关机时光模块从右到左逐个退出后再隐藏
 - **多提供方预设**：名称 / Base URL / Key / 模型 / 协议类型，主界面下拉秒切
 - **按端点测速**：一键测速会按所选提供方的协议分别请求 Chat、Responses 或 Messages 端点，显示 TTFT、tok/s 与总耗时
 - **实时统计**：tok/s 吞吐、首字延迟（TTFT）、今日 token、今日请求数
-- **可交互机柜**：七个功能单元与下方功能页双向联动，可左右滑动切换；点击底座抬升机柜查看 PCB，按电源启动后风扇加速、内部组件点亮，断电或抬升机柜时 AI 屏收拢熄灭；相邻点亮单元用直线直连，跨暗点用弧线；单元弹出时由第一点到第三点合成一条经过中间点的完整弧线，流动圆点保持原有圆形样式；顶部风扇安装板、Router 标识、USB/Type-C 接口与开机落入的 2.4G 接收器均可交互显示，各单元右侧带闪电、统计刻度和品牌风格图标
+- **可交互机柜**：七个功能单元与下方功能页双向联动，可左右滑动切换；点击底座抬升机柜查看 PCB，断电或抬升机柜时 AI 屏收拢熄灭；相邻点亮单元用直线直连，跨暗点用弧线；单元弹出时由第一点到第三点合成一条经过中间点的完整弧线，流动圆点保持原有圆形样式；顶部风扇安装板、Router 标识、USB/Type-C 接口与开机落入的 2.4G 接收器均可交互显示；底座六个光模块支持“已连接 / 拔线 / 整模块抽出”三态点击，拔出后该组流光立即停止；各单元右侧带闪电、状态点、统计刻度和空心爱心图标
 - **防后台杀死**：前台服务 + 常驻通知 + 唤醒锁 + 一键跳电池优化白名单
+- **动画性能**：固定金属外壳与静止光模块使用图像层缓存，待机及退到后台时暂停动画循环，降低重复绘制和耗电
 - **零命令电脑端**：APK 内置 `CloseRouter_WebUI.exe`，导出到电脑双击打开，选择 USB 或局域网模式即可连接
 - 黑白极简 UI，无对话功能，只做转发
 
@@ -62,7 +64,7 @@
 
 ```bash
 # Android（JDK 17 + Android SDK，AGP 8.7 / Kotlin 2.2）
-cd android && ./gradlew assembleDebug testDebugUnitTest   # 71 项 JVM 单测
+cd android && ./gradlew assembleDebug testDebugUnitTest   # 95 项 JVM 单测
 
 # 电脑端 WebUI（Python 3.12 + PyInstaller，内嵌 adb）
 # 构建脚本位于 closerouter_webui 项目，输出 CloseRouter_WebUI.exe

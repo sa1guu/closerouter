@@ -171,6 +171,68 @@ class ProxyEndToEndTest {
         assertEquals(6, stats.today.value.outputTokens)
     }
 
+    @Test
+    fun rapidRestartKeepsTheNewListenerAlive() {
+        repeat(20) {
+            ProxyServer.stop()
+            ProxyServer.start(proxyPort)
+            ProxyServer.start(proxyPort)
+        }
+        val req = Request.Builder().url("http://127.0.0.1:$proxyPort/v1/models").get().build()
+        repeat(3) {
+            client().newCall(req).execute().use { resp -> assertEquals(200, resp.code) }
+            assertTrue(ProxyServer.running.value)
+        }
+    }
+
+    @Test
+    fun occupiedPortFailsWithoutLeavingAListenerOrPreventingRecovery() {
+        ProxyServer.stop()
+        ServerSocket(0).use { occupied ->
+            val occupiedPort = occupied.localPort
+            assertTrue(!ProxyServer.start(occupiedPort))
+            assertTrue(!ProxyServer.running.value)
+            assertEquals(occupiedPort, ProxyServer.port)
+            val error = ProxyServer.startError.value.orEmpty()
+            assertTrue(error.contains("$occupiedPort"))
+            assertTrue(error.contains("已被占用"))
+            assertTrue(error.contains("修改转发端口"))
+            assertTrue(error.contains("未启动"))
+            ProxyServer.stop()
+            assertEquals(error, ProxyServer.startError.value)
+        }
+        assertTrue(ProxyServer.start(proxyPort))
+        assertEquals(null, ProxyServer.startError.value)
+        val req = Request.Builder().url("http://127.0.0.1:$proxyPort/v1/models").get().build()
+        client().newCall(req).execute().use { resp -> assertEquals(200, resp.code) }
+        assertTrue(ProxyServer.running.value)
+    }
+
+    @Test
+    fun changingThePortAfterFailureDoesNotStartForwardingAutomatically() {
+        ProxyServer.stop()
+        ServerSocket(0).use { occupied ->
+            assertTrue(!ProxyServer.start(occupied.localPort))
+            assertTrue(ProxyServer.startError.value != null)
+            ProxyServer.setPort(proxyPort)
+            assertEquals(proxyPort, ProxyServer.port)
+            assertEquals(null, ProxyServer.startError.value)
+            assertTrue(!ProxyServer.running.value)
+        }
+        assertTrue(ProxyServer.start(proxyPort))
+    }
+
+    @Test
+    fun restartingOntoAnOccupiedPortStopsTheOldListener() {
+        ServerSocket(0).use { occupied ->
+            ProxyServer.setPort(occupied.localPort)
+            assertTrue(!ProxyServer.running.value)
+            assertEquals(occupied.localPort, ProxyServer.port)
+            assertTrue(ProxyServer.startError.value.orEmpty().contains("已被占用"))
+            ServerSocket(proxyPort).use { released -> assertEquals(proxyPort, released.localPort) }
+        }
+    }
+
     private fun waitStats(cond: (StatsStore.DayStats) -> Boolean) {
         val deadline = System.currentTimeMillis() + 3000
         while (!cond(stats.today.value) && System.currentTimeMillis() < deadline) Thread.sleep(20)

@@ -51,7 +51,9 @@ import com.closerouter.app.data.ProviderProfile
 import com.closerouter.app.data.ProviderStore
 import com.closerouter.app.proxy.ProxyServer
 import com.closerouter.app.proxy.SpeedTester
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
 
 class MainActivity : ComponentActivity() {
@@ -88,6 +90,7 @@ fun MainScreen() {
     val app = App.instance
     val scope = rememberCoroutineScope()
     val running by ProxyServer.running.collectAsState()
+    val startError by ProxyServer.startError.collectAsState()
     val today by app.statsStore.today.collectAsState()
     val lastTtft by app.statsStore.lastTtftMs.collectAsState()
     val lastTokS by app.statsStore.lastTokPerSec.collectAsState()
@@ -202,7 +205,7 @@ fun MainScreen() {
                 .height(with(density) { (hPx - sheetTop()).toDp() })
                 .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                 .background(Color.White),
-            beyondViewportPageCount = 1,
+            beyondViewportPageCount = 0,
             verticalAlignment = Alignment.Top
         ) { page ->
             Column(Modifier.fillMaxSize()) {
@@ -220,10 +223,16 @@ fun MainScreen() {
                     when (page) {
                         0 -> {
                             ControlStatus(
-                                if (running) "转发服务已启动" else "机柜待机中",
-                                if (running) "USB 与局域网端点已就绪，机柜正在运行。" else "启动后点亮机柜，并开启本机 API 转发。",
-                                running, if (running) "ONLINE" else "STANDBY"
+                                if (running) "转发服务已启动" else if (startError != null) "转发启动失败" else "机柜待机中",
+                                if (running) "USB 与局域网端点已就绪，机柜正在运行。" else startError ?: "启动后点亮机柜，并开启本机 API 转发。",
+                                running, if (running) "ONLINE" else if (startError != null) "ERROR" else "STANDBY"
                             )
+                            if (startError != null) {
+                                Spacer(Modifier.height(8.dp))
+                                ControlAction("修改转发端口", "PORT", {
+                                    scope.launch { pagerState.animateScrollToPage(2) }
+                                }, secondary = true)
+                            }
                             Spacer(Modifier.height(12.dp))
                             ControlAction(if (running) "停止转发" else "启动转发", "PWR", {
                                 if (running) ProxyService.stop(app) else ProxyService.start(app)
@@ -262,10 +271,17 @@ fun MainScreen() {
                             }
                         }
                         2 -> {
+                            if (startError != null) {
+                                ControlStatus("转发启动失败", startError!!, false, "ERROR")
+                                Spacer(Modifier.height(12.dp))
+                            }
+                            val address by produceState("获取中…", batteryTick) {
+                                value = withContext(Dispatchers.IO) { lanIp() }
+                            }
                             ControlCard {
                                 ControlValue("USB / 本机地址", "http://127.0.0.1:${App.port}/v1", accent = true)
                                 HorizontalDivider(color = Color(0xFFE7E7E4))
-                                ControlValue("LAN / 局域网地址", "http://${lanIp()}:${App.port}/v1")
+                                ControlValue("LAN / 局域网地址", "http://$address:${App.port}/v1")
                             }
                             Spacer(Modifier.height(12.dp))
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -277,8 +293,10 @@ fun MainScreen() {
                                 ControlAction("应用", "SET", {
                                     val port = portText.toIntOrNull()
                                     if (port != null && port in 1024..65535) {
+                                        val wasRunning = running
                                         app.setPort(port)
-                                        message = "端口已改为 $port" + if (running) "（服务已重启）" else ""
+                                        message = ProxyServer.startError.value ?: ("端口已改为 $port" +
+                                            if (wasRunning && ProxyServer.running.value) "（服务已重启）" else "，可返回电源页启动转发")
                                     } else message = "请输入 1024–65535 之间的端口"
                                 }, Modifier.weight(1f))
                             }
